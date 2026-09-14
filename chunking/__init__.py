@@ -1,0 +1,1 @@
+"""Declarative document chunking and Lance persistence."""

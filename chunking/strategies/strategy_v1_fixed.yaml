@@ -1,0 +1,6 @@
+strategy_name: fixed_size_v1
+version: "1.0.0"
+splitter_type: recursive_character
+chunk_size_tokens: 300
+chunk_overlap_tokens: 30
+tokenizer: cl100k_base
