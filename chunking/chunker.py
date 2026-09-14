@@ -134,7 +134,7 @@ def read_chunks(dataset_path: Path = DEFAULT_DATASET_PATH) -> list[dict[str, Any
     return table.to_arrow().to_pylist()
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="JSON document file containing a list of records")
     parser.add_argument("--strategy", type=Path, default=DEFAULT_STRATEGY_PATH)

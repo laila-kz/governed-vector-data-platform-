@@ -186,7 +186,7 @@ def validate_file(
     return report
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="JSON or JSONL document file to validate")
     parser.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT_PATH)

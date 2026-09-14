@@ -5,6 +5,7 @@ fastembed>=0.2.0
 sentence-transformers>=2.5.0
 tiktoken>=0.6.0
 pytest>=8.0.0
+pytest-cov>=5.0.0
 duckdb>=0.10.0
 requests>=2.31.0
 lancedb>=0.8.0

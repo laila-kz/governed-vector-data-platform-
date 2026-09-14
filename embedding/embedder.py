@@ -170,7 +170,7 @@ def ingest_lance_dataset(
     return ingest_chunks(read_chunks(dataset_path), client, model=model, **kwargs)
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET_PATH)
     parser.add_argument("--qdrant-url", default=DEFAULT_QDRANT_URL)

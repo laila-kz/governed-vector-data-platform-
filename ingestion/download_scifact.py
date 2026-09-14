@@ -83,7 +83,7 @@ def download_scifact(
     return sizes
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output-dir",
