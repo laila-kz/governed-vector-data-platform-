@@ -1,0 +1,1 @@
+"""Embedding model registry and Qdrant ingestion pipeline."""
