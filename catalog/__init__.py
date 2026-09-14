@@ -1,0 +1,1 @@
+"""DuckDB metadata catalog and lineage persistence."""
