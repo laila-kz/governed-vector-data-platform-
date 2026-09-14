@@ -81,9 +81,17 @@ class LineageService:
 
     def __init__(self, catalog: CatalogDB) -> None:
         self.catalog = catalog
+        self._vector_lineage_cache: dict[str, VectorLineageRecord] = {}
+
+    def clear_cache(self) -> None:
+        """Invalidate cached traces after catalog writes."""
+        self._vector_lineage_cache.clear()
 
     def get_vector_lineage(self, vector_id: str) -> VectorLineageRecord:
         """Resolve vector -> model -> chunk -> document provenance."""
+        cached = self._vector_lineage_cache.get(vector_id)
+        if cached is not None:
+            return cached
         rows = self.catalog.query(
             """
             SELECT
@@ -107,7 +115,11 @@ class LineageService:
         )
         if not rows:
             raise KeyError(f"Vector not found: {vector_id}")
-        return VectorLineageRecord.model_validate(dict(zip(VectorLineageRecord.model_fields, rows[0])))
+        record = VectorLineageRecord.model_validate(
+            dict(zip(VectorLineageRecord.model_fields, rows[0]))
+        )
+        self._vector_lineage_cache[vector_id] = record
+        return record
 
     def get_document_lineage(self, doc_id: str, version: int) -> DocumentLineageRecord:
         """Resolve document -> chunks -> vectors for one document version."""

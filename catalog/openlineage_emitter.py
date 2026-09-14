@@ -29,7 +29,7 @@ OPENLINEAGE_SCHEMA_URL = "https://openlineage.io/spec/1-0-5/OpenLineage.json"
 DEFAULT_NAMESPACE = "governed-vector-platform"
 DEFAULT_JOB_NAME = "batch_embedding"
 DEFAULT_INPUT_DATASET = "scifact_corpus"
-DEFAULT_MARQUEZ_URL = "http://localhost:5000/api/v1/lineage"
+DEFAULT_MARQUEZ_URL = "http://localhost:5000"
 
 
 @attr.s(init=False)

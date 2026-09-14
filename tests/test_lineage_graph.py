@@ -1,3 +1,5 @@
+from time import perf_counter
+
 from catalog.db import CatalogDB
 from catalog.lineage_service import LineageService
 
@@ -137,3 +139,35 @@ def test_lineage_not_found_errors_are_explicit() -> None:
             assert "missing" in str(error)
         else:
             raise AssertionError("missing vector should raise KeyError")
+
+
+def test_all_inserted_vectors_have_valid_lineage_parents() -> None:
+    with CatalogDB(":memory:") as catalog:
+        _seed_catalog(catalog)
+        orphan_count = catalog.query(
+            """
+            SELECT count(*)
+            FROM vectors AS v
+            LEFT JOIN chunks AS c ON c.chunk_id = v.chunk_id
+            LEFT JOIN documents AS d
+              ON d.doc_id = c.doc_id AND d.doc_version = c.doc_version
+            LEFT JOIN embedding_models AS em
+              ON em.model_name = v.model_name
+             AND em.model_version = v.model_version
+            WHERE c.chunk_id IS NULL OR d.doc_id IS NULL OR em.model_name IS NULL
+            """
+        )[0][0]
+
+    assert orphan_count == 0
+
+
+def test_backward_trace_meets_ten_millisecond_target() -> None:
+    with CatalogDB(":memory:") as catalog:
+        _seed_catalog(catalog)
+        service = LineageService(catalog)
+        service.get_vector_lineage("vec_0001")
+        started = perf_counter()
+        service.get_vector_lineage("vec_0001")
+        elapsed_ms = (perf_counter() - started) * 1000
+
+    assert elapsed_ms < 10
