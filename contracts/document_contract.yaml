@@ -1,0 +1,55 @@
+contract_name: governed_document
+contract_version: "1.0.0"
+
+required_fields:
+  - doc_id
+  - title
+  - text
+  - metadata
+
+required_metadata_fields:
+  - source_uri
+  - author
+  - classification_level
+  - language
+
+allowed_values:
+  classification_level:
+    - public
+    - internal
+    - confidential
+    - restricted
+  language:
+    - en
+    - ar
+    - de
+    - es
+    - fr
+    - it
+    - ja
+    - ko
+    - pt
+    - zh
+
+character_limits:
+  doc_id:
+    min: 1
+    max: 256
+  title:
+    min: 1
+    max: 1000
+  text:
+    min: 1
+    max: 10000000
+  source_uri:
+    min: 1
+    max: 2048
+  author:
+    min: 1
+    max: 512
+  classification_level:
+    min: 1
+    max: 32
+  language:
+    min: 2
+    max: 8

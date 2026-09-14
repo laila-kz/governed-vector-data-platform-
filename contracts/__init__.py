@@ -1,0 +1,1 @@
+"""Document contract definitions and validation utilities."""
