@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from uuid import NAMESPACE_URL, uuid5
+from typing import TYPE_CHECKING
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -22,6 +23,9 @@ from qdrant_client.models import (
 
 from chunking.chunker import DEFAULT_DATASET_PATH, read_chunks
 from embedding.model_registry import BASELINE_MODEL_V1, EmbeddingModel, get_model
+
+if TYPE_CHECKING:
+    from catalog.openlineage_emitter import OpenLineageEmitter
 
 DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_COLLECTION_NAME = "scifact_v1"
@@ -118,6 +122,7 @@ def ingest_chunks(
     collection_name: str = DEFAULT_COLLECTION_NAME,
     alias_name: str = DEFAULT_ALIAS_NAME,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    lineage_emitter: "OpenLineageEmitter | None" = None,
 ) -> int:
     """Embed chunks in batches, upsert points, and ensure the live alias."""
     if batch_size <= 0:
@@ -129,32 +134,40 @@ def ingest_chunks(
     embed = embed or fastembedder(model)
     _ensure_collection(client, collection_name, model)
     created_at = datetime.now(timezone.utc).isoformat()
+    run_id = str(uuid5(NAMESPACE_URL, f"{collection_name}:{created_at}"))
+    if lineage_emitter is not None:
+        lineage_emitter.emit_start(run_id, collection_name)
     inserted = 0
-    for batch_start in range(0, len(chunk_list), batch_size):
-        batch = chunk_list[batch_start : batch_start + batch_size]
-        vectors = list(embed([str(chunk["chunk_text"]) for chunk in batch]))
-        if len(vectors) != len(batch):
-            raise ValueError("Embedding provider returned a different number of vectors")
-        points: list[PointStruct] = []
-        for offset, (chunk, vector) in enumerate(zip(batch, vectors)):
-            vector_id = _vector_id(batch_start + offset + 1)
-            vector_values = list(vector)
-            if len(vector_values) != model.dimensions:
-                raise ValueError(
-                    f"Embedding for {vector_id} has dimension {len(vector_values)}; "
-                    f"expected {model.dimensions}"
+    try:
+        for batch_start in range(0, len(chunk_list), batch_size):
+            batch = chunk_list[batch_start : batch_start + batch_size]
+            vectors = list(embed([str(chunk["chunk_text"]) for chunk in batch]))
+            if len(vectors) != len(batch):
+                raise ValueError("Embedding provider returned a different number of vectors")
+            points: list[PointStruct] = []
+            for offset, (chunk, vector) in enumerate(zip(batch, vectors)):
+                vector_id = _vector_id(batch_start + offset + 1)
+                vector_values = list(vector)
+                if len(vector_values) != model.dimensions:
+                    raise ValueError(
+                        f"Embedding for {vector_id} has dimension {len(vector_values)}; "
+                        f"expected {model.dimensions}"
+                    )
+                points.append(
+                    PointStruct(
+                        id=str(uuid5(NAMESPACE_URL, vector_id)),
+                        vector=vector_values,
+                        payload=_payload(chunk, model, vector_id, created_at),
+                    )
                 )
-            points.append(
-                PointStruct(
-                    id=str(uuid5(NAMESPACE_URL, vector_id)),
-                    vector=vector_values,
-                    payload=_payload(chunk, model, vector_id, created_at),
-                )
-            )
-        client.upsert(collection_name=collection_name, points=points, wait=True)
-        inserted += len(points)
+            client.upsert(collection_name=collection_name, points=points, wait=True)
+            inserted += len(points)
+    except Exception:
+        raise
 
     _ensure_alias(client, alias_name, collection_name)
+    if lineage_emitter is not None:
+        lineage_emitter.emit_complete(run_id, collection_name)
     return inserted
 
 
@@ -162,12 +175,19 @@ def ingest_lance_dataset(
     dataset_path: Path = DEFAULT_DATASET_PATH,
     qdrant_url: str = DEFAULT_QDRANT_URL,
     model_key: str = "v1",
+    lineage_emitter: "OpenLineageEmitter | None" = None,
     **kwargs: Any,
 ) -> int:
     """Read chunks from Lance and ingest them using a Qdrant HTTP client."""
     model = get_model(model_key)
     client = QdrantClient(url=qdrant_url)
-    return ingest_chunks(read_chunks(dataset_path), client, model=model, **kwargs)
+    return ingest_chunks(
+        read_chunks(dataset_path),
+        client,
+        model=model,
+        lineage_emitter=lineage_emitter,
+        **kwargs,
+    )
 
 
 def main() -> None:  # pragma: no cover
@@ -176,12 +196,29 @@ def main() -> None:  # pragma: no cover
     parser.add_argument("--qdrant-url", default=DEFAULT_QDRANT_URL)
     parser.add_argument("--model", default="v1")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--marquez-url", help="Marquez OpenLineage endpoint")
     args = parser.parse_args()
+    lineage_emitter = None
+    if args.marquez_url:
+        from catalog.openlineage_emitter import OpenLineageEmitter, VectorEmbeddingDatasetFacet
+
+        lineage_emitter = OpenLineageEmitter.for_marquez(
+            VectorEmbeddingDatasetFacet(
+                model_name="bge-small-en-v1.5",
+                model_version="1.0.0",
+                dimension=384,
+                strategy_name="fixed_size_v1",
+                strategy_version="1.0.0",
+                chunk_size_tokens=300,
+            ),
+            url=args.marquez_url,
+        )
     count = ingest_lance_dataset(
         args.dataset,
         args.qdrant_url,
         args.model,
         batch_size=args.batch_size,
+        lineage_emitter=lineage_emitter,
     )
     print(f"ingested {count} vectors into {DEFAULT_COLLECTION_NAME}")
 
