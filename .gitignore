@@ -1,1 +1,6 @@
 /guides
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+/data/qdrant_storage/

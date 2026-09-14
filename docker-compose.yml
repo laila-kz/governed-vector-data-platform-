@@ -1,0 +1,9 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.8.4
+    container_name: gvp_qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./data/qdrant_storage:/qdrant/storage
