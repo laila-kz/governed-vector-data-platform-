@@ -14,6 +14,50 @@ from qdrant_client import QdrantClient
 DEFAULT_POLICY_PATH = Path(__file__).resolve().parents[1] / "configs" / "routing_policy.yaml"
 
 
+class QdrantCompatibilityClient:
+    """Normalize search behavior across Qdrant client versions."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    def _call_search(self, method_name: str, collection_name: str, query_vector: list[float], limit: int, **kwargs: Any) -> dict[str, Any]:
+        method = getattr(self._client, method_name, None)
+        if callable(method):
+            return method(collection_name=collection_name, query_vector=query_vector, limit=limit, **kwargs)
+
+        query_method = getattr(self._client, "query_points", None)
+        if callable(query_method):
+            result = query_method(
+                collection_name=collection_name,
+                query=query_vector,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+                **kwargs,
+            )
+            points: list[dict[str, Any]] = []
+            for point in getattr(result, "points", []) or []:
+                payload = getattr(point, "payload", None)
+                if payload is None and isinstance(point, dict):
+                    payload = point.get("payload", {})
+                point_id = getattr(point, "id", None)
+                if point_id is None and isinstance(point, dict):
+                    point_id = point.get("id")
+                score = getattr(point, "score", None)
+                if score is None and isinstance(point, dict):
+                    score = point.get("score")
+                points.append({"id": point_id, "score": score, "payload": payload})
+            return {"collection": collection_name, "limit": limit, "query_vector": query_vector, "points": points}
+
+        raise AttributeError(f"Qdrant client does not support search or query_points: {type(self._client)!r}")
+
+    def search(self, *, collection_name: str, query_vector: list[float], limit: int, **kwargs: Any) -> dict[str, Any]:
+        return self._call_search("search", collection_name, query_vector, limit, **kwargs)
+
+    def search_shadow(self, *, collection_name: str, query_vector: list[float], limit: int, **kwargs: Any) -> dict[str, Any]:
+        return self._call_search("search_shadow", collection_name, query_vector, limit, **kwargs)
+
+
 def _load_policy(path: str | Path = DEFAULT_POLICY_PATH) -> dict[str, Any]:
     with Path(path).open("r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
@@ -37,10 +81,20 @@ class SearchProxy:
         client: Any,
         config: Mapping[str, Any] | None = None,
         embedder: Callable[[list[str]], list[list[float]]] | None = None,
+        policy_path: str | Path = DEFAULT_POLICY_PATH,
     ) -> None:
-        self.client = client
-        self.config = dict(_load_policy() if config is None else config)
+        self.client = QdrantCompatibilityClient(client)
+        self.policy_path = Path(policy_path)
+        self.config = dict(_load_policy(self.policy_path) if config is None else config)
         self.embedder = embedder or (lambda texts: [[0.1, 0.2, 0.3] for _ in texts])
+
+    def update_policy(self, updates: Mapping[str, Any]) -> dict[str, Any]:
+        """Apply a routing-policy delta and persist it to the YAML config file."""
+        self.config.update({key: value for key, value in updates.items() if value is not None})
+        self.policy_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.policy_path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(self.config, handle, sort_keys=False)
+        return dict(self.config)
 
     def _route_collection(self, query: str) -> str:
         ratio = float(self.config.get("traffic_split_ratio", 1.0))
