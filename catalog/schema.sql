@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS migrations (
     estimated_tokens BIGINT NOT NULL DEFAULT 0,
     estimated_cost_usd DOUBLE NOT NULL DEFAULT 0,
     estimated_duration_seconds DOUBLE NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
     predicted_retrieval_drift DOUBLE NOT NULL DEFAULT 0,
     batch_size INTEGER NOT NULL DEFAULT 64,
     rate_limit_per_second DOUBLE NOT NULL DEFAULT 1,
@@ -106,6 +107,15 @@ CREATE TABLE IF NOT EXISTS migrations (
     FOREIGN KEY (target_model_name, target_model_version)
         REFERENCES embedding_models (model_name, model_version),
     CHECK (total_vectors >= 0 AND migrated_vectors >= 0 AND migrated_vectors <= total_vectors)
+);
+
+CREATE TABLE IF NOT EXISTS migration_events (
+    event_id VARCHAR PRIMARY KEY,
+    migration_id VARCHAR NOT NULL,
+    event_type VARCHAR NOT NULL,
+    details_json JSON,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp,
+    FOREIGN KEY (migration_id) REFERENCES migrations (migration_id)
 );
 
 CREATE TABLE IF NOT EXISTS retrieval_eval_runs (

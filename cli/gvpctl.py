@@ -19,12 +19,14 @@ from cli.formatters import (
 )
 from migration.planner import MigrationPlanner
 from migration.progress_tracker import ProgressTracker
+from migration.cutover_manager import CutoverManager
 from migration.worker import ShadowMigrationWorker
 
 app = typer.Typer(add_completion=False, help="Governed Vector Platform operator CLI")
 lineage_app = typer.Typer(help="Trace lineage for cataloged vectors")
 migrate_app = typer.Typer(help="Plan and apply vector migrations")
 chaos_app = typer.Typer(help="Inject controlled failures into migrations")
+cutover_app = typer.Typer(help="Switch and restore live vector traffic")
 
 
 @lineage_app.command("trace")
@@ -112,6 +114,39 @@ def chaos_command(
 
 
 app.add_typer(chaos_app, name="chaos")
+
+
+@cutover_app.command("execute")
+def cutover_execute(
+    migration_id: str = typer.Argument(..., help="Completed migration identifier"),
+    approve: bool = typer.Option(False, "--approve", help="Skip the confirmation prompt"),
+    qdrant_url: str = typer.Option("http://localhost:6333", help="Qdrant server URL"),
+    policy_path: str = typer.Option("configs/routing_policy.yaml", help="Routing policy path"),
+) -> None:
+    """Atomically route vectors_live to the migration shadow collection."""
+    if not approve and not typer.confirm(f"Execute cutover for {migration_id}?", default=False):
+        raise typer.Abort()
+    with CatalogDB() as catalog, QdrantClient(url=qdrant_url) as qdrant:
+        CutoverManager(catalog, qdrant, policy_path=policy_path).execute_cutover(migration_id)
+    typer.echo(f"Migration {migration_id} cut over to vectors_live")
+
+
+@cutover_app.command("rollback")
+def cutover_rollback(
+    migration_id: str = typer.Argument(..., help="Migration identifier to roll back"),
+    approve: bool = typer.Option(False, "--approve", help="Skip the confirmation prompt"),
+    qdrant_url: str = typer.Option("http://localhost:6333", help="Qdrant server URL"),
+    policy_path: str = typer.Option("configs/routing_policy.yaml", help="Routing policy path"),
+) -> None:
+    """Atomically restore vectors_live to the baseline collection."""
+    if not approve and not typer.confirm(f"Rollback cutover for {migration_id}?", default=False):
+        raise typer.Abort()
+    with CatalogDB() as catalog, QdrantClient(url=qdrant_url) as qdrant:
+        CutoverManager(catalog, qdrant, policy_path=policy_path).rollback_cutover(migration_id)
+    typer.echo(f"Migration {migration_id} rolled back to vectors_live")
+
+
+app.add_typer(cutover_app, name="cutover")
 
 
 def _status_snapshot() -> dict[str, Any]:

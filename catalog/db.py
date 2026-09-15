@@ -18,6 +18,7 @@ TABLES = {
     "embedding_models",
     "vectors",
     "migrations",
+    "migration_events",
     "retrieval_eval_runs",
 }
 
@@ -41,6 +42,7 @@ class CatalogDB:
         """Apply the idempotent catalog schema to the active connection."""
         self.connection.execute(self.schema_path.read_text(encoding="utf-8"))
         for column, definition in (
+            ("error_count", "INTEGER DEFAULT 0"),
             ("total_characters", "BIGINT DEFAULT 0"),
             ("estimated_tokens", "BIGINT DEFAULT 0"),
             ("estimated_cost_usd", "DOUBLE DEFAULT 0"),

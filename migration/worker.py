@@ -117,7 +117,7 @@ class ShadowMigrationWorker:
                 self._insert_catalog_vectors(batch, points, target_model)
                 migrated += len(batch)
                 completed_batches += 1
-                self._update_migration_progress(migration_id, migrated)
+                self._update_migration_progress(migration_id, migrated, errors)
                 self._checkpoint(
                     migration_id,
                     total_vectors,
@@ -297,10 +297,10 @@ class ShadowMigrationWorker:
             ]
         )
 
-    def _update_migration_progress(self, migration_id: str, migrated: int) -> None:
+    def _update_migration_progress(self, migration_id: str, migrated: int, errors: int) -> None:
         self.catalog.connection.execute(
-            "UPDATE migrations SET migrated_vectors = ? WHERE migration_id = ?",
-            [migrated, migration_id],
+            "UPDATE migrations SET migrated_vectors = ?, error_count = ? WHERE migration_id = ?",
+            [migrated, errors, migration_id],
         )
 
     def _set_migration_status(self, migration_id: str, status: str) -> None:
