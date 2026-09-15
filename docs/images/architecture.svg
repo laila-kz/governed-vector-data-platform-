@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">Governed Vector Data Platform architecture</title>
+  <desc id="desc">SciFact flows through governed ingestion into Lance, DuckDB, Qdrant, quality gates, and observability services.</desc>
+  <rect width="1200" height="520" fill="#101820"/>
+  <g font-family="Segoe UI, sans-serif" fill="#f4f1ea">
+    <text x="60" y="62" font-size="30" font-weight="700">Governed Vector Data Platform</text>
+    <text x="60" y="92" font-size="16" fill="#a9c7c9">Storage, serving, migration safety, and lineage in one control plane</text>
+    <g stroke="#6fd3c2" stroke-width="3" fill="#172b35">
+      <rect x="60" y="170" width="170" height="90" rx="8"/><rect x="290" y="170" width="170" height="90" rx="8"/>
+      <rect x="520" y="120" width="190" height="90" rx="8"/><rect x="520" y="245" width="190" height="90" rx="8"/>
+      <rect x="780" y="170" width="170" height="90" rx="8"/><rect x="1000" y="120" width="140" height="90" rx="8"/>
+      <rect x="1000" y="245" width="140" height="90" rx="8"/>
+    </g>
+    <g font-size="18" text-anchor="middle">
+      <text x="145" y="208">SciFact</text><text x="145" y="235">ingestion</text>
+      <text x="375" y="208">Lance</text><text x="375" y="235">chunks</text>
+      <text x="615" y="158">Qdrant v1</text><text x="615" y="283">Qdrant shadow</text>
+      <text x="865" y="208">Quality gate</text>
+      <text x="1070" y="158">Marquez</text><text x="1070" y="283">Grafana</text>
+    </g>
+    <g stroke="#f3b562" stroke-width="3" marker-end="url(#arrow)"><path d="M230 215h60"/><path d="M460 195h60"/><path d="M460 235l60 55"/><path d="M710 165l70 35"/><path d="M710 290l70-45"/><path d="M950 195l50-30"/><path d="M950 235l50 50"/></g>
+  </g>
+  <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#f3b562"/></marker></defs>
+</svg>
