@@ -5,25 +5,9 @@ from __future__ import annotations
 from rich.console import Console
 from rich.table import Table
 
+from migration.planner import MigrationPlan
+
 console = Console()
-
-
-def render_migration_plan(plan: object) -> None:
-    """Render a migration plan as an operator-friendly Terraform-style diff."""
-    table = Table(title=f"Migration Plan: {plan.migration_id}")
-    table.add_column("Metric")
-    table.add_column("Current")
-    table.add_column("Planned")
-    table.add_row("Model", f"{plan.from_model} ({plan.from_model_version})", f"{plan.to_model} ({plan.to_model_version})")
-    table.add_row("Strategy", plan.from_strategy, plan.to_strategy)
-    table.add_row("Vectors", str(plan.total_vectors), str(plan.total_vectors))
-    table.add_row("Characters", str(plan.total_characters), str(plan.total_characters))
-    table.add_row("Estimated tokens", "-", str(plan.estimated_tokens))
-    table.add_row("Estimated cost (USD)", "-", f"{plan.estimated_cost_usd:.6f}")
-    table.add_row("Estimated duration (s)", "-", f"{plan.estimated_duration_seconds:.2f}")
-    table.add_row("Predicted retrieval drift", "-", f"{plan.predicted_retrieval_drift:.4f}")
-    table.add_row("Status", "-", plan.status)
-    console.print(table)
 
 
 def render_status_table(status: dict[str, object]) -> None:
@@ -50,9 +34,23 @@ def render_staleness_summary(summary: dict[str, object]) -> None:
 
 
 def render_lineage_trace(vector_id: str, trace: dict[str, object]) -> None:
-    table = Table(title=f"Lineage Trace: {vector_id}")
-    table.add_column("Field")
-    table.add_column("Value")
+    console.print(f"[bold]Vector[/bold]: {vector_id}")
+    console.print("[cyan]Document -> Chunk -> Model -> Qdrant Index[/cyan]")
     for key, value in trace.items():
-        table.add_row(str(key), str(value))
+        console.print(f"{key}: {value}")
+
+
+def render_migration_plan(plan: MigrationPlan) -> None:
+    """Render a migration plan as an operator-friendly Terraform-style diff."""
+    table = Table(title=f"Migration Plan {plan.migration_id}")
+    table.add_column("Change")
+    table.add_column("Value")
+    table.add_row("model", f"{plan.from_model} -> {plan.to_model}")
+    table.add_row("strategy", f"{plan.from_strategy} -> {plan.to_strategy}")
+    table.add_row("vector count", str(plan.total_vectors))
+    table.add_row("token volume", f"{plan.estimated_tokens:,}")
+    table.add_row("estimated API cost", f"${plan.estimated_cost_usd:.6f}")
+    table.add_row("estimated duration", f"{plan.estimated_duration_seconds:.2f}s")
+    table.add_row("predicted retrieval drift", f"{plan.predicted_retrieval_drift:.4f}")
+    table.add_row("status", plan.status)
     console.print(table)
