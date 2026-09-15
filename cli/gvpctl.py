@@ -5,15 +5,20 @@ from __future__ import annotations
 from typing import Any
 
 import typer
+from qdrant_client import QdrantClient
 
 from catalog.db import CatalogDB
 from cli.formatters import (
+    migration_progress,
     render_lineage_trace,
     render_migration_plan,
     render_staleness_summary,
     render_status_table,
+    update_migration_progress,
 )
 from migration.planner import MigrationPlanner
+from migration.progress_tracker import ProgressTracker
+from migration.worker import ShadowMigrationWorker
 
 app = typer.Typer(add_completion=False, help="Governed Vector Platform operator CLI")
 lineage_app = typer.Typer(help="Trace lineage for cataloged vectors")
@@ -56,6 +61,39 @@ def migrate_plan(
                 raise typer.Abort()
     except (KeyError, ValueError) as error:
         raise typer.BadParameter(str(error)) from error
+
+
+@migrate_app.command("apply")
+def migrate_apply(
+    migration_id: str = typer.Argument(..., help="Planned migration identifier"),
+    approve: bool = typer.Option(False, "--approve", help="Skip the confirmation prompt"),
+    qdrant_url: str = typer.Option("http://localhost:6333", help="Qdrant server URL"),
+    dataset_path: str = typer.Option("data/lance_lakehouse/chunks.lance", help="Lance dataset"),
+) -> None:
+    """Run a planned migration into its shadow Qdrant collection."""
+    if not approve and not typer.confirm(f"Apply migration {migration_id}?", default=False):
+        raise typer.Abort()
+    progress = migration_progress()
+    with CatalogDB() as catalog, QdrantClient(url=qdrant_url) as qdrant:
+        tracker = ProgressTracker()
+        worker = ShadowMigrationWorker(
+            catalog,
+            qdrant,
+            dataset_path=dataset_path,
+            progress_tracker=tracker,
+        )
+        with progress:
+            batch_task = progress.add_task("batches", total=1, rate=0.0)
+            throughput_task = progress.add_task("embedding", total=1, rate=0.0)
+            error_task = progress.add_task("errors", total=1, rate=0.0)
+            tracker.callback = lambda checkpoint: update_migration_progress(
+                progress, batch_task, throughput_task, error_task, checkpoint
+            )
+            result = worker.run(migration_id)
+            progress.update(batch_task, total=result.completed_batches)
+            progress.update(throughput_task, total=result.migrated_vectors)
+            progress.update(error_task, total=max(result.error_count, 1))
+    typer.echo(f"Migration {migration_id} completed: {result.migrated_vectors} vectors")
 
 
 app.add_typer(migrate_app, name="migrate")

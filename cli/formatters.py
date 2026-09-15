@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from migration.planner import MigrationPlan
+from migration.progress_tracker import MigrationProgress
 
 console = Console()
 
@@ -54,3 +56,32 @@ def render_migration_plan(plan: MigrationPlan) -> None:
     table.add_row("predicted retrieval drift", f"{plan.predicted_retrieval_drift:.4f}")
     table.add_row("status", plan.status)
     console.print(table)
+
+
+def migration_progress() -> Progress:
+    """Build the live progress display used by ``migrate apply``."""
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TextColumn("{task.fields[rate]:.2f} chunks/s"),
+        TimeElapsedColumn(),
+    )
+
+
+def update_migration_progress(
+    progress: Progress,
+    batch_task: int,
+    throughput_task: int,
+    error_task: int,
+    checkpoint: MigrationProgress,
+) -> None:
+    """Update the three live migration metrics from one checkpoint."""
+    progress.update(batch_task, completed=checkpoint.completed_batches)
+    progress.update(
+        throughput_task,
+        completed=checkpoint.migrated_vectors,
+        rate=checkpoint.chunks_per_second,
+    )
+    progress.update(error_task, completed=checkpoint.error_count)
