@@ -42,6 +42,13 @@ HTTP_REQUEST_LATENCY_SECONDS = Histogram(
     buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
 )
 
+SHADOW_LATENCY_DELTA_SECONDS = Histogram(
+    "shadow_latency_delta_seconds",
+    "Difference between shadow and client-facing search latency.",
+    labelnames=("route",),
+    buckets=(-1.0, -0.1, -0.01, 0.0, 0.01, 0.1, 1.0),
+)
+
 
 def metrics_payload() -> bytes:
     """Return the current Prometheus payload."""
@@ -57,6 +64,33 @@ def observe_http_request(method: str, route: str, status_code: int, duration_sec
 def observe_search_latency(route: str, model: str, status: str, duration_seconds: float) -> None:
     """Record search latency."""
     SEARCH_LATENCY_SECONDS.labels(route=route, model=model, status=status).observe(duration_seconds)
+
+
+def observe_shadow_latency_delta(route: str, delta_seconds: float) -> None:
+    """Record shadow latency relative to the client-facing search."""
+    SHADOW_LATENCY_DELTA_SECONDS.labels(route=route).observe(delta_seconds)
+
+
+def estimate_token_count(text: str) -> int:
+    """Estimate tokens using the project tokenizer, with a lightweight fallback."""
+    try:
+        import tiktoken
+
+        return max(1, len(tiktoken.get_encoding("cl100k_base").encode(text)))
+    except Exception:
+        return max(1, len(text.split()))
+
+
+def observe_embedding_usage(
+    model_name: str,
+    model_version: str,
+    text: str,
+    pricing_usd_per_1k_tokens: float = 0.0,
+) -> None:
+    """Record tokens and estimated cost for one embedding request."""
+    tokens = estimate_token_count(text)
+    observe_token_usage(model_name, model_version, tokens)
+    observe_cost(model_name, model_version, tokens / 1000 * pricing_usd_per_1k_tokens)
 
 
 def observe_token_usage(model_name: str, model_version: str, tokens: int) -> None:

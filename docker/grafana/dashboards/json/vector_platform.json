@@ -147,8 +147,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "Prometheus" },
-          "expr": "sum(rate(http_requests_total[1m])) by (endpoint, status_code)",
-          "legendFormat": "{{endpoint}} ({{status_code}})",
+          "expr": "sum(rate(http_requests_total[1m])) by (route, status_code)",
+          "legendFormat": "{{route}} ({{status_code}})",
           "refId": "A"
         }
       ],

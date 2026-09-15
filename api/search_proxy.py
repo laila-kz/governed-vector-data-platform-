@@ -11,6 +11,8 @@ from typing import Any, Callable, Mapping
 import yaml
 from qdrant_client import QdrantClient
 
+from api.telemetry import observe_embedding_usage
+
 DEFAULT_POLICY_PATH = Path(__file__).resolve().parents[1] / "configs" / "routing_policy.yaml"
 
 
@@ -82,11 +84,13 @@ class SearchProxy:
         config: Mapping[str, Any] | None = None,
         embedder: Callable[[list[str]], list[list[float]]] | None = None,
         policy_path: str | Path = DEFAULT_POLICY_PATH,
+        shadow_latency_observer: Callable[[float], None] | None = None,
     ) -> None:
         self.client = QdrantCompatibilityClient(client)
         self.policy_path = Path(policy_path)
         self.config = dict(_load_policy(self.policy_path) if config is None else config)
         self.embedder = embedder or (lambda texts: [[0.1, 0.2, 0.3] for _ in texts])
+        self.shadow_latency_observer = shadow_latency_observer
 
     def update_policy(self, updates: Mapping[str, Any]) -> dict[str, Any]:
         """Apply a routing-policy delta and persist it to the YAML config file."""
@@ -116,18 +120,27 @@ class SearchProxy:
             raise ValueError("embedding model returned no result for the query")
         return list(embeddings[0])
 
-    def _shadow_read(self, query: str, query_vector: list[float], limit: int) -> None:
+    def _shadow_read(
+        self,
+        query: str,
+        query_vector: list[float],
+        limit: int,
+        primary_duration_seconds: float,
+    ) -> None:
         shadow_collection = self.config.get("shadow_collection")
         if not self.config.get("shadow_read_enabled", False) or not shadow_collection:
             return
         def _task() -> None:
             try:
+                started = time.perf_counter()
                 self.client.search_shadow(
                     collection_name=str(shadow_collection),
                     query_vector=query_vector,
                     limit=limit,
                     score_threshold=0.0,
                 )
+                if self.shadow_latency_observer is not None:
+                    self.shadow_latency_observer(time.perf_counter() - started - primary_duration_seconds)
             except Exception:
                 pass
 
@@ -140,8 +153,15 @@ class SearchProxy:
             raise ValueError("top_k must be greater than zero")
 
         query_vector = self._embed_query(query)
+        observe_embedding_usage(
+            str(self.config.get("active_model", "unknown")),
+            str(self.config.get("active_version", "unknown")),
+            query,
+            float(self.config.get("pricing_usd_per_1k_tokens", 0.0)),
+        )
         active_alias = str(self.config.get("active_alias", "vectors_live"))
         collection_name = self._route_collection(query)
+        started = time.perf_counter()
         if collection_name == active_alias:
             primary_result = self.client.search(
                 collection_name=collection_name,
@@ -156,8 +176,9 @@ class SearchProxy:
                 limit=top_k,
                 score_threshold=0.0,
             )
+        primary_duration_seconds = time.perf_counter() - started
 
-        self._shadow_read(query, query_vector, top_k)
+        self._shadow_read(query, query_vector, top_k, primary_duration_seconds)
         payload = primary_result.copy()
         payload["collection"] = collection_name
         payload["results"] = [

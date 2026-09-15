@@ -14,7 +14,14 @@ from fastapi.responses import JSONResponse, Response
 from qdrant_client import QdrantClient
 
 from api.search_proxy import SearchProxy, _load_policy
-from api.telemetry import metrics_content_type, metrics_payload, observe_http_request, observe_search_latency
+from api.telemetry import (
+    metrics_content_type,
+    metrics_payload,
+    observe_http_request,
+    observe_search_latency,
+    observe_shadow_latency_delta,
+    set_stale_vector_percentage,
+)
 from catalog.db import DEFAULT_DATABASE_PATH, CatalogDB
 from catalog.lineage_service import LineageService
 
@@ -52,18 +59,25 @@ class FakeQdrantClient:
 def _build_proxy(config: dict[str, Any] | None = None) -> SearchProxy:
     proxy_config = _load_policy(POLICY_PATH) if config is None else config
     client: Any = FakeQdrantClient()
-    use_real_qdrant = os.getenv("USE_REAL_QDRANT", "false").lower() == "true"
+    use_real_qdrant = os.getenv("USE_REAL_QDRANT", "true").lower() == "true"
     if use_real_qdrant:
         try:
             client = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
             client.get_collections()
+            if not client.collection_exists(proxy_config.get("active_alias", "vectors_live")):
+                raise RuntimeError("active Qdrant alias is not available")
         except Exception:
             client = FakeQdrantClient()
 
     def embedder(texts: list[str]) -> list[list[float]]:
         return [[0.1, 0.2, 0.3] for _ in texts]
 
-    return SearchProxy(client=client, config=proxy_config, embedder=embedder)
+    return SearchProxy(
+        client=client,
+        config=proxy_config,
+        embedder=embedder,
+        shadow_latency_observer=lambda delta: observe_shadow_latency_delta("/v1/search", delta),
+    )
 
 
 app = FastAPI(title="Governed Vector Data Platform Control Plane")
@@ -92,12 +106,18 @@ async def search(request: Request) -> dict[str, Any]:
     payload = await request.json()
     query = str(payload.get("query", ""))
     top_k = int(payload.get("top_k", 5))
+    started = time.perf_counter()
     try:
         result = app.state.search_proxy.search(query, top_k)
         status = "success"
     except Exception as exc:  # pragma: no cover - safety fallback
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    observe_search_latency("/v1/search", app.state.proxy_config.get("active_model", "unknown"), status, 0.0)
+    observe_search_latency(
+        "/v1/search",
+        app.state.proxy_config.get("active_model", "unknown"),
+        status,
+        time.perf_counter() - started,
+    )
     return result
 
 
@@ -116,19 +136,40 @@ async def get_staleness() -> dict[str, Any]:
     with CatalogDB(DEFAULT_DATABASE_PATH) as catalog:
         total_vectors = catalog.query("SELECT COUNT(*) FROM vectors")[0][0]
         if total_vectors == 0:
+            set_stale_vector_percentage(app.state.proxy_config.get("active_model", "unknown"), 0.0)
             return {"total_vectors": 0, "stale_vectors": 0, "breakdown": {}}
+        strategy_rows = catalog.query(
+            "SELECT strategy_version FROM chunk_strategies ORDER BY created_at DESC, strategy_version DESC LIMIT 1"
+        )
+        current_strategy = str(strategy_rows[0][0]) if strategy_rows else None
+        stale_condition = "v.model_name <> ? OR v.model_version <> ?"
+        parameters: list[Any] = [
+            app.state.proxy_config.get("active_model", ""),
+            app.state.proxy_config.get("active_version", ""),
+        ]
+        if current_strategy is not None:
+            stale_condition += " OR c.strategy_version <> ?"
+            parameters.append(current_strategy)
         stale_rows = catalog.query(
-            """
+            f"""
             SELECT v.model_version, COUNT(*)
             FROM vectors AS v
+            JOIN chunks AS c ON c.chunk_id = v.chunk_id
+            WHERE {stale_condition}
             GROUP BY v.model_version
             ORDER BY v.model_version
-            """
+            """,
+            parameters,
         )
         breakdown = {str(model_version): int(count) for model_version, count in stale_rows}
+        stale_vectors = sum(breakdown.values())
+        set_stale_vector_percentage(
+            app.state.proxy_config.get("active_model", "unknown"),
+            stale_vectors / int(total_vectors) * 100,
+        )
         return {
             "total_vectors": int(total_vectors),
-            "stale_vectors": 0,
+            "stale_vectors": stale_vectors,
             "breakdown": breakdown,
         }
 
