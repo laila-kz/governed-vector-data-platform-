@@ -12,13 +12,20 @@ import typer
 from api.search_proxy import _load_policy
 from catalog.db import DEFAULT_DATABASE_PATH, CatalogDB
 from catalog.lineage_service import LineageService
-from cli.formatters import render_lineage_trace, render_staleness_summary, render_status_table
+from cli.formatters import (
+    render_lineage_trace,
+    render_migration_plan,
+    render_staleness_summary,
+    render_status_table,
+)
+from migration.planner import MigrationPlanner
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = APP_ROOT / "configs" / "routing_policy.yaml"
 
 app = typer.Typer(add_completion=False, help="Governed Vector Platform operator CLI")
 lineage_app = typer.Typer(help="Trace lineage for cataloged vectors")
+migrate_app = typer.Typer(help="Plan and apply embedding migrations")
 
 
 @lineage_app.command("trace")
@@ -28,6 +35,32 @@ def lineage_trace(vector_id: str = typer.Argument(..., help="Vector identifier t
 
 
 app.add_typer(lineage_app, name="lineage")
+
+
+@migrate_app.command("plan")
+def migration_plan(
+    from_model: str = typer.Argument(..., help="Source registry key or model name"),
+    to_model: str = typer.Argument(..., help="Target registry key or model name"),
+    from_strategy: str = typer.Option("fixed_size_v1", help="Source chunk strategy"),
+    to_strategy: str = typer.Option("fixed_size_v1", help="Target chunk strategy"),
+    approve: bool = typer.Option(False, "--approve", help="Approve the planned migration without prompting"),
+) -> None:
+    """Create and display a pre-flight migration plan."""
+    with CatalogDB(DEFAULT_DATABASE_PATH) as catalog:
+        plan = MigrationPlanner(catalog).plan_migration(
+            from_model,
+            to_model,
+            from_strategy,
+            to_strategy,
+        )
+    render_migration_plan(plan)
+    if not approve and not typer.confirm("Approve this migration plan?", default=False):
+        typer.echo(f"Migration {plan.migration_id} remains planned; approval was not granted.")
+        return
+    typer.echo(f"Migration {plan.migration_id} approved.")
+
+
+app.add_typer(migrate_app, name="migrate")
 
 
 def _status_snapshot() -> dict[str, Any]:

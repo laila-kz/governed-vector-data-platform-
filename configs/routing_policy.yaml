@@ -1,8 +1,8 @@
-active_alias: "vectors_live"
-active_model: "bge-small-en-v1.5"
-active_version: "1.0.0"
+active_alias: vectors_live
+active_model: bge-small-en-v1.5
+active_version: 1.0.0
 shadow_collection: null
 shadow_model: null
 shadow_version: null
-traffic_split_ratio: 1.0   # 1.0 = 100% to active alias, 0.9 = 90% active / 10% shadow
+traffic_split_ratio: 1.0
 shadow_read_enabled: false

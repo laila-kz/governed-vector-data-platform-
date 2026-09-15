@@ -40,6 +40,18 @@ class CatalogDB:
     def initialize(self) -> None:
         """Apply the idempotent catalog schema to the active connection."""
         self.connection.execute(self.schema_path.read_text(encoding="utf-8"))
+        for column, definition in (
+            ("total_characters", "BIGINT DEFAULT 0"),
+            ("estimated_tokens", "BIGINT DEFAULT 0"),
+            ("estimated_cost_usd", "DOUBLE DEFAULT 0"),
+            ("estimated_duration_seconds", "DOUBLE DEFAULT 0"),
+            ("predicted_retrieval_drift", "DOUBLE DEFAULT 0"),
+            ("batch_size", "INTEGER DEFAULT 64"),
+            ("rate_limit_per_second", "DOUBLE DEFAULT 1"),
+        ):
+            self.connection.execute(
+                f'ALTER TABLE migrations ADD COLUMN IF NOT EXISTS "{column}" {definition}'
+            )
 
     @contextmanager
     def transaction(self) -> Iterator[duckdb.DuckDBPyConnection]:

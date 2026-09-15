@@ -8,6 +8,24 @@ from rich.table import Table
 console = Console()
 
 
+def render_migration_plan(plan: object) -> None:
+    """Render a migration plan as an operator-friendly Terraform-style diff."""
+    table = Table(title=f"Migration Plan: {plan.migration_id}")
+    table.add_column("Metric")
+    table.add_column("Current")
+    table.add_column("Planned")
+    table.add_row("Model", f"{plan.from_model} ({plan.from_model_version})", f"{plan.to_model} ({plan.to_model_version})")
+    table.add_row("Strategy", plan.from_strategy, plan.to_strategy)
+    table.add_row("Vectors", str(plan.total_vectors), str(plan.total_vectors))
+    table.add_row("Characters", str(plan.total_characters), str(plan.total_characters))
+    table.add_row("Estimated tokens", "-", str(plan.estimated_tokens))
+    table.add_row("Estimated cost (USD)", "-", f"{plan.estimated_cost_usd:.6f}")
+    table.add_row("Estimated duration (s)", "-", f"{plan.estimated_duration_seconds:.2f}")
+    table.add_row("Predicted retrieval drift", "-", f"{plan.predicted_retrieval_drift:.4f}")
+    table.add_row("Status", "-", plan.status)
+    console.print(table)
+
+
 def render_status_table(status: dict[str, object]) -> None:
     table = Table(title="Governed Vector Platform Status")
     table.add_column("Metric")
