@@ -34,7 +34,19 @@ BASELINE_MODEL_V1 = EmbeddingModel(
     latency_ms_p95=100.0,
 )
 
-MODEL_REGISTRY: dict[str, EmbeddingModel] = {BASELINE_MODEL_V1.registry_key: BASELINE_MODEL_V1}
+TARGET_MODEL_V2 = EmbeddingModel(
+    registry_key="v2",
+    model_name="BAAI/bge-large-en-v1.5",
+    model_version="2.0.0",
+    dimensions=1024,
+    provider="fastembed",
+    pricing_usd_per_1k_tokens=0.0,
+    latency_ms_p95=250.0,
+)
+
+MODEL_REGISTRY: dict[str, EmbeddingModel] = {
+    model.registry_key: model for model in (BASELINE_MODEL_V1, TARGET_MODEL_V2)
+}
 
 
 def get_model(registry_key: str = "v1") -> EmbeddingModel:

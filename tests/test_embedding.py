@@ -1,7 +1,7 @@
 from typing import Any, Sequence
 
 from embedding.embedder import ingest_chunks
-from embedding.model_registry import BASELINE_MODEL_V1, get_model
+from embedding.model_registry import BASELINE_MODEL_V1, TARGET_MODEL_V2, get_model
 
 
 class FakeQdrant:
@@ -35,6 +35,19 @@ def test_baseline_model_registry_contract() -> None:
     assert model.payload_model_name == "bge-small-en-v1.5"
     assert model.dimensions == 384
     assert model.pricing_usd_per_1k_tokens == 0.0
+
+
+def test_target_model_v2_registry_contract() -> None:
+    model = get_model("v2")
+
+    assert model == TARGET_MODEL_V2
+    assert model.model_name == "BAAI/bge-large-en-v1.5"
+    assert model.model_version == "2.0.0"
+    assert model.payload_model_name == "bge-large-en-v1.5"
+    assert model.dimensions == 1024
+    assert model.provider == "fastembed"
+    assert model.pricing_usd_per_1k_tokens == 0.0
+    assert model.latency_ms_p95 == 250.0
 
 
 def test_ingest_batches_vectors_and_builds_payload() -> None:
