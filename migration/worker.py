@@ -6,7 +6,7 @@ import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 from uuid import NAMESPACE_URL, uuid5
 
 from qdrant_client.models import Distance, PointStruct, VectorParams
@@ -21,6 +21,20 @@ from migration.progress_tracker import MigrationProgress, ProgressTracker
 DEFAULT_SHADOW_COLLECTION = "scifact_v2_shadow"
 DEFAULT_BATCH_SIZE = 64
 DEFAULT_MAX_RETRIES = 3
+
+
+class CircuitBreakerOpenError(RuntimeError):
+    """Raised when repeated migration failures open the worker circuit breaker."""
+
+
+class FaultInjector(Protocol):
+    def before_upsert(self, batch_size: int, attempt: int) -> None:
+        """Inject a fault before an upstream batch write."""
+
+
+class NullFaultInjector:
+    def before_upsert(self, batch_size: int, attempt: int) -> None:
+        return None
 
 
 class ShadowMigrationWorker:
@@ -40,6 +54,9 @@ class ShadowMigrationWorker:
         random_value: Callable[[], float] = random.random,
         progress_tracker: ProgressTracker | None = None,
         collection_name: str = DEFAULT_SHADOW_COLLECTION,
+        fault_injector: FaultInjector | None = None,
+        circuit_breaker_threshold: int | None = None,
+        on_backoff: Callable[[float, int, Exception], None] | None = None,
     ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size must be greater than zero")
@@ -58,6 +75,11 @@ class ShadowMigrationWorker:
         self.random_value = random_value
         self.progress_tracker = progress_tracker or ProgressTracker()
         self.collection_name = collection_name
+        self.fault_injector = fault_injector or NullFaultInjector()
+        self.circuit_breaker_threshold = circuit_breaker_threshold or max_retries + 1
+        if self.circuit_breaker_threshold <= 0:
+            raise ValueError("circuit_breaker_threshold must be greater than zero")
+        self.on_backoff = on_backoff
 
     def run(self, migration_id: str) -> MigrationProgress:
         migration = self._load_migration(migration_id)
@@ -229,18 +251,28 @@ class ShadowMigrationWorker:
         self, points: Sequence[PointStruct], migration_id: str, batch_size: int
     ) -> int:
         errors = 0
+        consecutive_failures = 0
         for attempt in range(self.max_retries + 1):
             try:
+                self.fault_injector.before_upsert(batch_size, attempt)
                 self.qdrant_client.upsert(
                     collection_name=self.collection_name, points=list(points), wait=True
                 )
                 return errors
-            except Exception:
+            except Exception as error:
                 errors += 1
+                consecutive_failures += 1
+                if consecutive_failures >= self.circuit_breaker_threshold:
+                    raise CircuitBreakerOpenError(
+                        f"Circuit breaker opened after {consecutive_failures} consecutive failures"
+                    ) from error
                 if attempt == self.max_retries:
                     raise
                 delay = self.backoff_base_seconds * (2**attempt)
-                self.sleep(delay * (0.5 + self.random_value()))
+                backoff = delay * (0.5 + self.random_value())
+                if self.on_backoff is not None:
+                    self.on_backoff(backoff, errors, error)
+                self.sleep(backoff)
         return errors
 
     def _insert_catalog_vectors(

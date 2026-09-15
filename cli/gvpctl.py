@@ -8,6 +8,7 @@ import typer
 from qdrant_client import QdrantClient
 
 from catalog.db import CatalogDB
+from cli.chaos import chaos_inject
 from cli.formatters import (
     migration_progress,
     render_lineage_trace,
@@ -23,6 +24,7 @@ from migration.worker import ShadowMigrationWorker
 app = typer.Typer(add_completion=False, help="Governed Vector Platform operator CLI")
 lineage_app = typer.Typer(help="Trace lineage for cataloged vectors")
 migrate_app = typer.Typer(help="Plan and apply vector migrations")
+chaos_app = typer.Typer(help="Inject controlled failures into migrations")
 
 
 @lineage_app.command("trace")
@@ -97,6 +99,19 @@ def migrate_apply(
 
 
 app.add_typer(migrate_app, name="migrate")
+
+
+@chaos_app.command("inject")
+def chaos_command(
+    fail_rate: float = typer.Option(0.25, min=0.0, max=1.0, help="Probability of a fault per batch attempt"),
+    migration_id: str = typer.Option(..., help="Migration to run under fault injection"),
+    qdrant_url: str = typer.Option("http://localhost:6333", help="Qdrant server URL"),
+    dataset_path: str = typer.Option("data/lance_lakehouse/chunks.lance", help="Lance dataset"),
+) -> None:
+    chaos_inject(fail_rate, migration_id, qdrant_url, dataset_path)
+
+
+app.add_typer(chaos_app, name="chaos")
 
 
 def _status_snapshot() -> dict[str, Any]:
