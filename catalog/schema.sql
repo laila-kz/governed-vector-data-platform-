@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS migration_events (
 
 CREATE TABLE IF NOT EXISTS retrieval_eval_runs (
     run_id VARCHAR PRIMARY KEY,
+    migration_id VARCHAR,
     model_name VARCHAR NOT NULL,
     model_version VARCHAR NOT NULL,
     strategy_name VARCHAR,
@@ -130,11 +131,14 @@ CREATE TABLE IF NOT EXISTS retrieval_eval_runs (
     ndcg_at_10 DOUBLE,
     mrr DOUBLE,
     cosine_drift DOUBLE,
+    error_rate DOUBLE NOT NULL DEFAULT 0,
+    status VARCHAR NOT NULL DEFAULT 'completed',
     metrics_json JSON,
     started_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
     pii_masked_flag BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp,
+    FOREIGN KEY (migration_id) REFERENCES migrations (migration_id),
     FOREIGN KEY (model_name, model_version)
         REFERENCES embedding_models (model_name, model_version)
 );

@@ -21,12 +21,16 @@ from migration.planner import MigrationPlanner
 from migration.progress_tracker import ProgressTracker
 from migration.cutover_manager import CutoverManager
 from migration.worker import ShadowMigrationWorker
+from evaluation.quality_gate import QualityGate, qdrant_retriever
+from embedding.embedder import fastembedder
+from embedding.model_registry import get_model
 
 app = typer.Typer(add_completion=False, help="Governed Vector Platform operator CLI")
 lineage_app = typer.Typer(help="Trace lineage for cataloged vectors")
 migrate_app = typer.Typer(help="Plan and apply vector migrations")
 chaos_app = typer.Typer(help="Inject controlled failures into migrations")
 cutover_app = typer.Typer(help="Switch and restore live vector traffic")
+quality_gate_app = typer.Typer(help="Evaluate migration retrieval quality")
 
 
 @lineage_app.command("trace")
@@ -71,6 +75,9 @@ def migrate_plan(
 def migrate_apply(
     migration_id: str = typer.Argument(..., help="Planned migration identifier"),
     approve: bool = typer.Option(False, "--approve", help="Skip the confirmation prompt"),
+    skip_quality_gate: bool = typer.Option(
+        False, "--skip-quality-gate", help="Skip automatic post-migration quality evaluation"
+    ),
     qdrant_url: str = typer.Option("http://localhost:6333", help="Qdrant server URL"),
     dataset_path: str = typer.Option("data/lance_lakehouse/chunks.lance", help="Lance dataset"),
 ) -> None:
@@ -97,6 +104,18 @@ def migrate_apply(
             progress.update(batch_task, total=result.completed_batches)
             progress.update(throughput_task, total=result.migrated_vectors)
             progress.update(error_task, total=max(result.error_count, 1))
+        if not skip_quality_gate:
+            embedders = {
+                "bge-small-en-v1.5": fastembedder(get_model("v1")),
+                "bge-large-en-v1.5": fastembedder(get_model("v2")),
+            }
+            decision = QualityGate(
+                catalog,
+                qdrant_retriever(qdrant, embedders),
+            ).check(migration_id)
+            typer.echo(decision.reason)
+            if not decision.passed:
+                raise typer.Exit(code=1)
     typer.echo(f"Migration {migration_id} completed: {result.migrated_vectors} vectors")
 
 
@@ -147,6 +166,31 @@ def cutover_rollback(
 
 
 app.add_typer(cutover_app, name="cutover")
+
+
+@quality_gate_app.command("check")
+def quality_gate_check(
+    migration_id: str = typer.Argument(..., help="Migration identifier to evaluate"),
+    qdrant_url: str = typer.Option("http://localhost:6333", help="Qdrant server URL"),
+    evaluation_catalog: str = typer.Option("evaluation/beir_scifact_qrels.json", help="SciFact evaluation catalog"),
+) -> None:
+    """Run the baseline-vs-shadow quality gate before cutover."""
+    with CatalogDB() as catalog, QdrantClient(url=qdrant_url) as qdrant:
+        embedders = {
+            "bge-small-en-v1.5": fastembedder(get_model("v1")),
+            "bge-large-en-v1.5": fastembedder(get_model("v2")),
+        }
+        decision = QualityGate(
+            catalog,
+            qdrant_retriever(qdrant, embedders),
+            evaluation_catalog=evaluation_catalog,
+        ).check(migration_id)
+    typer.echo(decision.reason)
+    if not decision.passed:
+        raise typer.Exit(code=1)
+
+
+app.add_typer(quality_gate_app, name="quality-gate")
 
 
 def _status_snapshot() -> dict[str, Any]:

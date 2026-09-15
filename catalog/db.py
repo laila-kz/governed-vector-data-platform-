@@ -43,6 +43,9 @@ class CatalogDB:
         self.connection.execute(self.schema_path.read_text(encoding="utf-8"))
         for column, definition in (
             ("error_count", "INTEGER DEFAULT 0"),
+            ("migration_id", "VARCHAR"),
+            ("status", "VARCHAR DEFAULT 'completed'"),
+            ("error_rate", "DOUBLE DEFAULT 0"),
             ("total_characters", "BIGINT DEFAULT 0"),
             ("estimated_tokens", "BIGINT DEFAULT 0"),
             ("estimated_cost_usd", "DOUBLE DEFAULT 0"),
