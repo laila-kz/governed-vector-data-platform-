@@ -67,8 +67,8 @@ class CutoverManager:
             raise ValueError(
                 f"Migration {migration_id} has {error_count} recorded errors"
             )
-        if migration[6] not in {"completed", "running", "planned", "pending"}:
-            raise ValueError(f"Migration {migration_id} is not cutover-ready: {migration[6]}")
+        if migration[6] != "completed":
+            raise ValueError(f"Migration {migration_id} is not cutover-ready: status is {migration[6]}")
         return True
 
     def _swap_alias(self, collection_name: str) -> None:

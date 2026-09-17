@@ -132,7 +132,7 @@ class ShadowMigrationWorker:
 
         self._set_migration_status(migration_id, "completed")
         return self.progress_tracker.checkpoints[-1] if self.progress_tracker.checkpoints else MigrationProgress(
-            migration_id, total_vectors, 0, 0, errors, 0.0
+            migration_id, total_vectors, migrated, completed_batches, errors, time.perf_counter() - started
         )
 
     def _load_migration(self, migration_id: str) -> tuple[Any, ...]:

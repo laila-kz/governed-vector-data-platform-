@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import typer
+import yaml
 from qdrant_client import QdrantClient
 
 from catalog.db import CatalogDB
+from catalog.lineage_service import LineageService
 from cli.chaos import chaos_inject
 from cli.formatters import (
     migration_progress,
@@ -34,9 +37,28 @@ quality_gate_app = typer.Typer(help="Evaluate migration retrieval quality")
 
 
 @lineage_app.command("trace")
-def lineage_trace(vector_id: str = typer.Argument(..., help="Vector identifier to trace")) -> None:
+def lineage_trace(
+    vector_id: str = typer.Argument(..., help="Vector identifier to trace"),
+    database: str = typer.Option("data/catalog.duckdb", help="Catalog database path"),
+) -> None:
     """Trace a vector back to its document, chunk, and model lineage."""
-    render_lineage_trace(vector_id, _lineage_snapshot(vector_id))
+    trace_data: dict[str, Any] = {}
+    try:
+        with CatalogDB(database) as catalog:
+            service = LineageService(catalog)
+            record = service.get_vector_lineage(vector_id)
+            trace_data = {
+                "vector_id": record.vector_id,
+                "document": f"{record.doc_id} (v{record.doc_version})",
+                "chunk": record.chunk_id,
+                "model": f"{record.model_name}:{record.model_version}",
+                "collection": record.collection_name,
+                "strategy": f"{record.strategy_name}:{record.strategy_version}",
+                "source_uri": record.source_uri,
+            }
+    except Exception:
+        trace_data = _lineage_snapshot(vector_id)
+    render_lineage_trace(vector_id, trace_data)
 
 
 app.add_typer(lineage_app, name="lineage")
@@ -194,20 +216,72 @@ app.add_typer(quality_gate_app, name="quality-gate")
 
 
 def _status_snapshot() -> dict[str, Any]:
+    active_alias = "vectors_live"
+    active_model = "bge-small-en-v1.5"
+    policy_path = Path("configs/routing_policy.yaml")
+    if policy_path.exists():
+        try:
+            policy = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+            active_alias = policy.get("active_alias", active_alias)
+            active_model = policy.get("active_model", active_model)
+        except Exception:
+            pass
+
+    total_indexed = 0
+    duckdb_sync = "synced"
+    try:
+        with CatalogDB() as catalog:
+            rows = catalog.query("SELECT COUNT(*) FROM vectors")
+            if rows and rows[0][0] is not None:
+                total_indexed = int(rows[0][0])
+    except Exception:
+        duckdb_sync = "unavailable"
+
     return {
-        "active_alias": "vectors_live",
-        "active_model": "bge-small-en-v1.5",
+        "active_alias": active_alias,
+        "active_model": active_model,
         "qdrant_collection_health": "healthy",
-        "total_indexed_vectors": 1234,
-        "duckdb_sync": "synced",
+        "total_indexed_vectors": total_indexed,
+        "duckdb_sync": duckdb_sync,
     }
 
 
 def _staleness_snapshot() -> dict[str, dict[str, int]]:
-    return {
-        "bge-small-en-v1.5": {"active": 120, "stale": 15},
-        "fixed_size_v1": {"active": 110, "stale": 10},
-    }
+    summary: dict[str, dict[str, int]] = {}
+    try:
+        with CatalogDB() as catalog:
+            model_rows = catalog.query(
+                "SELECT model_name, active, COUNT(*) FROM vectors GROUP BY model_name, active"
+            )
+            for model_name, active, count in model_rows:
+                key = str(model_name)
+                if key not in summary:
+                    summary[key] = {"active": 0, "stale": 0}
+                if active:
+                    summary[key]["active"] += int(count)
+                else:
+                    summary[key]["stale"] += int(count)
+
+            strategy_rows = catalog.query(
+                "SELECT strategy_name, active, COUNT(*) FROM vectors GROUP BY strategy_name, active"
+            )
+            for strategy_name, active, count in strategy_rows:
+                key = str(strategy_name)
+                if key not in summary:
+                    summary[key] = {"active": 0, "stale": 0}
+                if active:
+                    summary[key]["active"] += int(count)
+                else:
+                    summary[key]["stale"] += int(count)
+    except Exception:
+        pass
+
+    if not summary:
+        summary = {
+            "bge-small-en-v1.5": {"active": 0, "stale": 0},
+            "fixed_size_v1": {"active": 0, "stale": 0},
+        }
+    return summary
 
 
 def _lineage_snapshot(vector_id: str) -> dict[str, Any]:

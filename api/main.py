@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -60,16 +59,28 @@ def _build_proxy(config: dict[str, Any] | None = None) -> SearchProxy:
     proxy_config = _load_policy(POLICY_PATH) if config is None else config
     client: Any = FakeQdrantClient()
     use_real_qdrant = os.getenv("USE_REAL_QDRANT", "true").lower() == "true"
+    is_live_qdrant = False
     if use_real_qdrant:
         try:
             client = QdrantClient(url=os.getenv("QDRANT_URL", "http://localhost:6333"))
             client.get_collections()
             if not client.collection_exists(proxy_config.get("active_alias", "vectors_live")):
                 raise RuntimeError("active Qdrant alias is not available")
+            is_live_qdrant = True
         except Exception:
             client = FakeQdrantClient()
 
     def embedder(texts: list[str]) -> list[list[float]]:
+        if is_live_qdrant:
+            try:
+                from embedding.embedder import fastembedder
+                from embedding.model_registry import get_model
+
+                active_model_name = proxy_config.get("active_model", "BAAI/bge-small-en-v1.5")
+                model_obj = get_model(active_model_name)
+                return [list(vec) for vec in fastembedder(model_obj)(texts)]
+            except Exception:
+                pass
         return [[0.1, 0.2, 0.3] for _ in texts]
 
     return SearchProxy(

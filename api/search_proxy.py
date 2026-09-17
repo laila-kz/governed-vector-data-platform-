@@ -162,20 +162,12 @@ class SearchProxy:
         active_alias = str(self.config.get("active_alias", "vectors_live"))
         collection_name = self._route_collection(query)
         started = time.perf_counter()
-        if collection_name == active_alias:
-            primary_result = self.client.search(
-                collection_name=collection_name,
-                query_vector=query_vector,
-                limit=top_k,
-                score_threshold=0.0,
-            )
-        else:
-            primary_result = self.client.search(
-                collection_name=collection_name,
-                query_vector=query_vector,
-                limit=top_k,
-                score_threshold=0.0,
-            )
+        primary_result = self.client.search(
+            collection_name=collection_name,
+            query_vector=query_vector,
+            limit=top_k,
+            score_threshold=0.0,
+        )
         primary_duration_seconds = time.perf_counter() - started
 
         self._shadow_read(query, query_vector, top_k, primary_duration_seconds)

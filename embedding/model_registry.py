@@ -49,9 +49,19 @@ MODEL_REGISTRY: dict[str, EmbeddingModel] = {
 }
 
 
+def find_model(identifier: str) -> EmbeddingModel:
+    """Look up a registered model by registry key, full model name, or short payload name."""
+    if identifier in MODEL_REGISTRY:
+        return MODEL_REGISTRY[identifier]
+    for model in MODEL_REGISTRY.values():
+        if identifier in (model.model_name, model.payload_model_name):
+            return model
+    raise KeyError(f"Unknown embedding model identifier: {identifier}")
+
+
 def get_model(registry_key: str = "v1") -> EmbeddingModel:
-    """Look up a registered model by its stable registry key."""
+    """Look up a registered model by its stable registry key or name."""
     try:
-        return MODEL_REGISTRY[registry_key]
+        return find_model(registry_key)
     except KeyError as error:
         raise KeyError(f"Unknown embedding model registry key: {registry_key}") from error

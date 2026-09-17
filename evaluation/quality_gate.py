@@ -99,7 +99,10 @@ class QualityGate:
         error_rate: float,
         status: str,
     ) -> None:
-        model = get_model("v1" if metrics.model == "bge-small-en-v1.5" else "v2")
+        try:
+            model = get_model(metrics.model)
+        except KeyError:
+            model = get_model("v1" if "small" in str(metrics.model).lower() else "v2")
         self.catalog.insert_retrieval_eval_runs(
             [{
                 "run_id": str(uuid.uuid4()),
