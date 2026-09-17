@@ -150,10 +150,14 @@ def chaos_inject(
         raise ValueError("migration_id is required")
     from qdrant_client import QdrantClient
 
-    with CatalogDB() as catalog, QdrantClient(url=qdrant_url) as qdrant:
-        report = run_chaos_injection(
-            catalog, qdrant, migration_id, fail_rate, dataset_path=dataset_path
-        )
+    with CatalogDB() as catalog:
+        qdrant = QdrantClient(url=qdrant_url)
+        try:
+            report = run_chaos_injection(
+                catalog, qdrant, migration_id, fail_rate, dataset_path=dataset_path
+            )
+        finally:
+            qdrant.close()
     print(
         f"Chaos migration {report.migration_id}: "
         f"circuit_breaker={report.circuit_breaker_opened}, "

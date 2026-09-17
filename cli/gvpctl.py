@@ -107,37 +107,41 @@ def migrate_apply(
     if not approve and not typer.confirm(f"Apply migration {migration_id}?", default=False):
         raise typer.Abort()
     progress = migration_progress()
-    with CatalogDB() as catalog, QdrantClient(url=qdrant_url) as qdrant:
-        tracker = ProgressTracker()
-        worker = ShadowMigrationWorker(
-            catalog,
-            qdrant,
-            dataset_path=dataset_path,
-            progress_tracker=tracker,
-        )
-        with progress:
-            batch_task = progress.add_task("batches", total=1, rate=0.0)
-            throughput_task = progress.add_task("embedding", total=1, rate=0.0)
-            error_task = progress.add_task("errors", total=1, rate=0.0)
-            tracker.callback = lambda checkpoint: update_migration_progress(
-                progress, batch_task, throughput_task, error_task, checkpoint
-            )
-            result = worker.run(migration_id)
-            progress.update(batch_task, total=result.completed_batches)
-            progress.update(throughput_task, total=result.migrated_vectors)
-            progress.update(error_task, total=max(result.error_count, 1))
-        if not skip_quality_gate:
-            embedders = {
-                "bge-small-en-v1.5": fastembedder(get_model("v1")),
-                "bge-large-en-v1.5": fastembedder(get_model("v2")),
-            }
-            decision = QualityGate(
+    with CatalogDB() as catalog:
+        qdrant = QdrantClient(url=qdrant_url)
+        try:
+            tracker = ProgressTracker()
+            worker = ShadowMigrationWorker(
                 catalog,
-                qdrant_retriever(qdrant, embedders),
-            ).check(migration_id)
-            typer.echo(decision.reason)
-            if not decision.passed:
-                raise typer.Exit(code=1)
+                qdrant,
+                dataset_path=dataset_path,
+                progress_tracker=tracker,
+            )
+            with progress:
+                batch_task = progress.add_task("batches", total=1, rate=0.0)
+                throughput_task = progress.add_task("embedding", total=1, rate=0.0)
+                error_task = progress.add_task("errors", total=1, rate=0.0)
+                tracker.callback = lambda checkpoint: update_migration_progress(
+                    progress, batch_task, throughput_task, error_task, checkpoint
+                )
+                result = worker.run(migration_id)
+                progress.update(batch_task, total=result.completed_batches)
+                progress.update(throughput_task, total=result.migrated_vectors)
+                progress.update(error_task, total=max(result.error_count, 1))
+            if not skip_quality_gate:
+                embedders = {
+                    "bge-small-en-v1.5": fastembedder(get_model("v1")),
+                    "bge-large-en-v1.5": fastembedder(get_model("v2")),
+                }
+                decision = QualityGate(
+                    catalog,
+                    qdrant_retriever(qdrant, embedders),
+                ).check(migration_id)
+                typer.echo(decision.reason)
+                if not decision.passed:
+                    raise typer.Exit(code=1)
+        finally:
+            qdrant.close()
     typer.echo(f"Migration {migration_id} completed: {result.migrated_vectors} vectors")
 
 
@@ -167,8 +171,12 @@ def cutover_execute(
     """Atomically route vectors_live to the migration shadow collection."""
     if not approve and not typer.confirm(f"Execute cutover for {migration_id}?", default=False):
         raise typer.Abort()
-    with CatalogDB() as catalog, QdrantClient(url=qdrant_url) as qdrant:
-        CutoverManager(catalog, qdrant, policy_path=policy_path).execute_cutover(migration_id)
+    with CatalogDB() as catalog:
+        qdrant = QdrantClient(url=qdrant_url)
+        try:
+            CutoverManager(catalog, qdrant, policy_path=policy_path).execute_cutover(migration_id)
+        finally:
+            qdrant.close()
     typer.echo(f"Migration {migration_id} cut over to vectors_live")
 
 
@@ -182,8 +190,12 @@ def cutover_rollback(
     """Atomically restore vectors_live to the baseline collection."""
     if not approve and not typer.confirm(f"Rollback cutover for {migration_id}?", default=False):
         raise typer.Abort()
-    with CatalogDB() as catalog, QdrantClient(url=qdrant_url) as qdrant:
-        CutoverManager(catalog, qdrant, policy_path=policy_path).rollback_cutover(migration_id)
+    with CatalogDB() as catalog:
+        qdrant = QdrantClient(url=qdrant_url)
+        try:
+            CutoverManager(catalog, qdrant, policy_path=policy_path).rollback_cutover(migration_id)
+        finally:
+            qdrant.close()
     typer.echo(f"Migration {migration_id} rolled back to vectors_live")
 
 
@@ -197,16 +209,20 @@ def quality_gate_check(
     evaluation_catalog: str = typer.Option("evaluation/beir_scifact_qrels.json", help="SciFact evaluation catalog"),
 ) -> None:
     """Run the baseline-vs-shadow quality gate before cutover."""
-    with CatalogDB() as catalog, QdrantClient(url=qdrant_url) as qdrant:
-        embedders = {
-            "bge-small-en-v1.5": fastembedder(get_model("v1")),
-            "bge-large-en-v1.5": fastembedder(get_model("v2")),
-        }
-        decision = QualityGate(
-            catalog,
-            qdrant_retriever(qdrant, embedders),
-            evaluation_catalog=evaluation_catalog,
-        ).check(migration_id)
+    with CatalogDB() as catalog:
+        qdrant = QdrantClient(url=qdrant_url)
+        try:
+            embedders = {
+                "bge-small-en-v1.5": fastembedder(get_model("v1")),
+                "bge-large-en-v1.5": fastembedder(get_model("v2")),
+            }
+            decision = QualityGate(
+                catalog,
+                qdrant_retriever(qdrant, embedders),
+                evaluation_catalog=evaluation_catalog,
+            ).check(migration_id)
+        finally:
+            qdrant.close()
     typer.echo(decision.reason)
     if not decision.passed:
         raise typer.Exit(code=1)
