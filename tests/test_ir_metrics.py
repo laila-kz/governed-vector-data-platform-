@@ -1,6 +1,6 @@
 import pytest
 
-from evaluation.metrics import benchmark_latency, evaluate_rankings, percentile
+from evaluation.metrics import benchmark_latency, evaluate_rankings, load_catalog, percentile
 
 
 def test_evaluate_rankings_computes_recall_ndcg_and_mrr() -> None:
@@ -36,6 +36,46 @@ def test_rankings_accept_qdrant_style_result_mappings() -> None:
 
     assert metrics.recall_at_10 == 1.0
     assert metrics.mrr == 1.0
+
+
+def test_rankings_accept_tuples_and_document_id_mappings() -> None:
+    metrics = evaluate_rankings(
+        "test-model",
+        {"q1": ["doc-1"], "q2": ["doc-2"]},
+        {
+            "q1": [("doc-1", 0.9)],
+            "q2": [{"document_id": "doc-2", "score": 0.8}],
+        },
+    )
+
+    assert metrics.recall_at_10 == 1.0
+    assert metrics.mrr == 1.0
+
+
+def test_empty_relevance_and_empty_catalog_are_validated(tmp_path) -> None:
+    metrics = evaluate_rankings("test-model", {"q1": []}, {"q1": []})
+    assert metrics.recall_at_10 == 0.0
+    assert metrics.ndcg_at_10 == 0.0
+
+    with pytest.raises(ValueError, match="at least one query"):
+        evaluate_rankings("test-model", {}, {})
+
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="JSON list"):
+        load_catalog(catalog)
+
+    catalog.write_text('[{"query_id": "q1"}]', encoding="utf-8")
+    with pytest.raises(ValueError, match="missing required fields"):
+        load_catalog(catalog)
+
+
+def test_percentile_rejects_invalid_inputs() -> None:
+    with pytest.raises(ValueError, match="no values"):
+        percentile([], 50)
+    with pytest.raises(ValueError, match="between 0 and 100"):
+        percentile([1, 2], -1)
+    assert percentile([7], 95) == 7.0
 
 
 def test_percentile_interpolates_and_latency_benchmark_records_summary() -> None:

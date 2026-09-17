@@ -1,8 +1,10 @@
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from catalog.db import CatalogDB
-from evaluation.quality_gate import QualityGate
+from evaluation.quality_gate import QualityGate, qdrant_retriever
 from migration.planner import MigrationPlanner
 from tests.test_shadow_migration import _seed_catalog
 
@@ -82,3 +84,40 @@ def test_quality_gate_fails_when_retrieval_errors_occur(tmp_path: Path) -> None:
 
         assert decision.passed is False
         assert decision.error_rate == 1.0
+
+
+def test_quality_gate_rejects_invalid_configuration_and_unknown_migration() -> None:
+    with CatalogDB(":memory:") as catalog:
+        with pytest.raises(ValueError, match="must not be negative"):
+            QualityGate(catalog, lambda collection, query, limit: [], recall_tolerance=-1)
+        with pytest.raises(ValueError, match="Unknown migration"):
+            QualityGate(catalog, lambda collection, query, limit: []).check("missing")
+
+
+def test_qdrant_retriever_supports_object_and_mapping_points() -> None:
+    class Point:
+        id = 7
+        payload = {"doc_id": "object-doc"}
+        score = 0.9
+
+    class Result:
+        points = [Point(), {"id": 8, "payload": {}, "score": 0.8}]
+
+    class Client:
+        def query_points(self, **kwargs: Any) -> Result:
+            assert kwargs["collection_name"] == "scifact_v2_shadow"
+            assert kwargs["limit"] == 3
+            return Result()
+
+    retriever = qdrant_retriever(
+        Client(),
+        {
+            "bge-small-en-v1.5": lambda texts: [[1.0]],
+            "bge-large-en-v1.5": lambda texts: [[2.0]],
+        },
+    )
+
+    assert retriever("scifact_v2_shadow", "claim", 3) == [
+        {"id": "object-doc", "score": 0.9},
+        {"id": "8", "score": 0.8},
+    ]
