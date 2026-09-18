@@ -1,6 +1,14 @@
+from typing import Any
+
 import pytest
 
-from evaluation.metrics import benchmark_latency, evaluate_rankings, load_catalog, percentile
+from evaluation.metrics import (
+    benchmark_latency,
+    evaluate_qdrant_collection,
+    evaluate_rankings,
+    load_catalog,
+    percentile,
+)
 
 
 def test_evaluate_rankings_computes_recall_ndcg_and_mrr() -> None:
@@ -76,6 +84,26 @@ def test_percentile_rejects_invalid_inputs() -> None:
     with pytest.raises(ValueError, match="between 0 and 100"):
         percentile([1, 2], -1)
     assert percentile([7], 95) == 7.0
+
+
+def test_evaluate_qdrant_collection_uses_ranked_points() -> None:
+    class Client:
+        def search(self, **kwargs: Any) -> list[dict[str, Any]]:
+            return [{"id": "doc-1", "score": 0.9, "payload": {}}]
+
+    metrics = evaluate_qdrant_collection(
+        "test-model",
+        [{"query_id": "q1", "text": "claim", "relevant_doc_ids": ["doc-1"]}],
+        Client(),
+        lambda texts: [[0.1, 0.2]],
+        "scifact_v1",
+    )
+
+    assert metrics.recall_at_10 == 1.0
+    assert metrics.ndcg_at_10 == 1.0
+    assert metrics.mrr == 1.0
+    assert metrics.latency is not None
+    assert metrics.latency.sample_count == 1
 
 
 def test_percentile_interpolates_and_latency_benchmark_records_summary() -> None:

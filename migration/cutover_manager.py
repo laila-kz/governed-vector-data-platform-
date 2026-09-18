@@ -72,6 +72,8 @@ class CutoverManager:
         return True
 
     def _swap_alias(self, collection_name: str) -> None:
+        if not self.qdrant_client.collection_exists(collection_name):
+            raise ValueError(f"Qdrant collection does not exist: {collection_name}")
         self.qdrant_client.update_collection_aliases(
             change_aliases_operations=[
                 models.DeleteAliasOperation(

@@ -123,6 +123,26 @@ def materialize_catalog(
     catalog.insert_vectors(_vector_rows(chunks, model, collection))
 
 
+def reconcile_vector_catalog(
+    catalog: CatalogDB,
+    chunks: Sequence[Mapping[str, Any]],
+    model: EmbeddingModel = BASELINE_MODEL_V1,
+    collection: str = DEFAULT_COLLECTION_NAME,
+) -> int:
+    """Insert missing baseline vector metadata without duplicating catalog rows."""
+    existing = {
+        str(row[0])
+        for row in catalog.query("SELECT vector_id FROM vectors WHERE collection_name = ?", [collection])
+    }
+    rows = [
+        row for row in _vector_rows(chunks, model, collection)
+        if row["vector_id"] not in existing
+    ]
+    if rows:
+        catalog.insert_vectors(rows)
+    return len(rows)
+
+
 def bootstrap_baseline(
     *,
     corpus_path: Path = DEFAULT_CORPUS_PATH,
@@ -143,7 +163,10 @@ def bootstrap_baseline(
     owns_client = qdrant_client is None
     try:
         with CatalogDB(database_path) as catalog:
-            materialize_catalog(catalog, documents, chunks, model, collection)
+            if not catalog.query("SELECT 1 FROM documents LIMIT 1"):
+                materialize_catalog(catalog, documents, chunks, model, collection)
+            else:
+                reconcile_vector_catalog(catalog, chunks, model, collection)
             inserted = ingest_chunks(
                 chunks,
                 client,

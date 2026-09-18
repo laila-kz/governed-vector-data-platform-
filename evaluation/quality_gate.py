@@ -129,6 +129,8 @@ class QualityGate:
     def check(self, migration_id: str) -> QualityGateDecision:
         """Evaluate both collections and persist pass/fail evaluation runs."""
         migration = self._migration(migration_id)
+        if int(migration[6] or 0) <= 0:
+            raise ValueError("quality gate requires a migration with planned vectors")
         source_model, target_model = str(migration[0]), str(migration[2])
         queries = self._queries()
         baseline, baseline_errors = self._evaluate_collection(

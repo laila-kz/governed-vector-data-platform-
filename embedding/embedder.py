@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -31,6 +32,8 @@ DEFAULT_QDRANT_URL = "http://localhost:6333"
 DEFAULT_COLLECTION_NAME = "scifact_v1"
 DEFAULT_ALIAS_NAME = "vectors_live"
 DEFAULT_BATCH_SIZE = 64
+
+LOGGER = logging.getLogger(__name__)
 
 VectorEmbedder = Callable[[Sequence[str]], Iterable[Sequence[float]]]
 
@@ -141,6 +144,12 @@ def ingest_chunks(
     try:
         for batch_start in range(0, len(chunk_list), batch_size):
             batch = chunk_list[batch_start : batch_start + batch_size]
+            LOGGER.info(
+                "Embedding batch %d/%d (%d chunks)",
+                batch_start // batch_size + 1,
+                (len(chunk_list) + batch_size - 1) // batch_size,
+                len(batch),
+            )
             vectors = list(embed([str(chunk["chunk_text"]) for chunk in batch]))
             if len(vectors) != len(batch):
                 raise ValueError("Embedding provider returned a different number of vectors")
@@ -198,6 +207,7 @@ def main() -> None:  # pragma: no cover
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--marquez-url", help="Marquez OpenLineage endpoint")
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     lineage_emitter = None
     if args.marquez_url:
         from catalog.openlineage_emitter import OpenLineageEmitter, VectorEmbeddingDatasetFacet

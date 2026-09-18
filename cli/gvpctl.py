@@ -129,14 +129,23 @@ def migrate_apply(
                 progress.update(throughput_task, total=result.migrated_vectors)
                 progress.update(error_task, total=max(result.error_count, 1))
             if not skip_quality_gate:
-                embedders = {
-                    "bge-small-en-v1.5": fastembedder(get_model("v1")),
-                    "bge-large-en-v1.5": fastembedder(get_model("v2")),
-                }
-                decision = QualityGate(
-                    catalog,
-                    qdrant_retriever(qdrant, embedders),
-                ).check(migration_id)
+                try:
+                    embedders = {
+                        "bge-small-en-v1.5": fastembedder(get_model("v1")),
+                        "bge-large-en-v1.5": fastembedder(get_model("v2")),
+                    }
+                    decision = QualityGate(
+                        catalog,
+                        qdrant_retriever(qdrant, embedders),
+                    ).check(migration_id)
+                except Exception as error:
+                    catalog.connection.execute(
+                        "UPDATE migrations SET status = 'failed', error_count = error_count + 1 WHERE migration_id = ?",
+                        [migration_id],
+                    )
+                    raise typer.ClickException(
+                        f"automatic quality gate could not run: {error}"
+                    ) from error
                 typer.echo(decision.reason)
                 if not decision.passed:
                     raise typer.Exit(code=1)

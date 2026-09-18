@@ -62,12 +62,14 @@ Evaluated on 5,183 scientific paper abstracts and expert human relevance judgmen
 
 | Metric | Baseline: `bge-small-en-v1.5` (384d) | Target: `bge-large-en-v1.5` (1024d) | Change | Quality Gate Rule | Status |
 |---|---:|---:|---:|---|:---:|
-| **Recall@5** | 0.7420 | 0.7760 | +4.58% | observed | ✅ |
-| **Recall@10** | 0.8120 | 0.8420 | +3.69% | $v_2 \ge v_1 - 0.02$ | ✅ PASS |
-| **NDCG@10** | 0.7410 | 0.7840 | +5.80% | $v_2 \ge v_1$ | ✅ PASS |
-| **MRR** | 0.6980 | 0.7350 | +5.30% | observed | ✅ |
-| **p95 Latency** | 18.4 ms | 42.1 ms | +23.7 ms | observed | ✅ |
-| **Error Rate** | 0.00% | 0.00% | 0.00% | $\text{Error Rate} = 0.0$ | ✅ PASS |
+| **Recall@5** | illustrative | illustrative | pending | observed | not yet verified |
+| **Recall@10** | illustrative | illustrative | pending | $v_2 \ge v_1 - 0.02$ | not yet verified |
+| **NDCG@10** | illustrative | illustrative | pending | $v_2 \ge v_1$ | not yet verified |
+| **MRR** | illustrative | illustrative | pending | observed | not yet verified |
+| **p95 Latency** | illustrative | illustrative | pending | observed | not yet verified |
+| **Error Rate** | pending | pending | pending | $\text{Error Rate} = 0.0$ | not yet verified |
+
+> The table is a placeholder until `python -m evaluation.metrics` completes against populated baseline and shadow collections. Do not cite these values as measured results.
 
 ---
 
@@ -83,6 +85,12 @@ docker compose up -d
 - **Grafana Dashboards**: `http://localhost:3001` (`admin` / `admin`)
 - **Prometheus**: `http://localhost:9090`
 - **Qdrant Vector Engine**: `http://localhost:6333/dashboard`
+
+FastAPI runs separately from Docker Compose:
+
+```powershell
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
 
 ### Marquez OpenLineage Dataset Provenance
 ![Marquez OpenLineage console](docs/images/marquez_lineage.png)
@@ -102,4 +110,4 @@ python -m pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-All 68 unit, invariant, and chaos tests cover data contracts, PII sanitization, Lance Lakehouse operations, DuckDB relational queries, OpenLineage emissions, FastAPI search proxy, shadow migrations, atomic cutovers, and IR quality gates.
+The current verified suite contains 73 tests and has reached 90% total coverage locally. The final populated migration and retrieval benchmark remain integration prerequisites.

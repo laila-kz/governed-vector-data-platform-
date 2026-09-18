@@ -1,4 +1,4 @@
-.PHONY: install test coverage qdrant-up qdrant-down
+.PHONY: install test coverage qdrant-up qdrant-down bootstrap
 
 install:
 	python -m pip install -r requirements.txt
@@ -14,3 +14,6 @@ qdrant-up:
 
 qdrant-down:
 	docker compose down
+
+bootstrap:
+	python -m ingestion.bootstrap

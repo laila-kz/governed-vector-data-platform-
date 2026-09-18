@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+import pytest
 
 from catalog.db import CatalogDB
 from chunking.chunker import write_chunks
@@ -55,7 +56,21 @@ def _prepare_migration(tmp_path: Path) -> tuple[CatalogDB, FakeQdrant, str, Path
         "active_alias: vectors_live\nactive_model: bge-small-en-v1.5\nactive_version: 1.0.0\n",
         encoding="utf-8",
     )
-    return catalog, FakeQdrant(), plan.migration_id, policy_path
+    qdrant = FakeQdrant()
+    qdrant.collections.update({"scifact_v1", "scifact_v2_shadow"})
+    return catalog, qdrant, plan.migration_id, policy_path
+
+
+def test_cutover_rejects_missing_source_collection(tmp_path: Path) -> None:
+    catalog, qdrant, migration_id, policy_path = _prepare_migration(tmp_path)
+    qdrant.collections.remove("scifact_v1")
+    try:
+        manager = CutoverManager(catalog, qdrant, policy_path=policy_path)
+        with pytest.raises(ValueError, match="scifact_v1"):
+            manager.rollback_cutover(migration_id)
+        assert qdrant.alias_operations == []
+    finally:
+        catalog.close()
 
 
 def test_execute_cutover_atomically_updates_alias_catalog_and_policy(tmp_path: Path) -> None:
