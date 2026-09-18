@@ -121,3 +121,19 @@ def test_qdrant_retriever_supports_object_and_mapping_points() -> None:
         {"id": "object-doc", "score": 0.9},
         {"id": "8", "score": 0.8},
     ]
+
+
+def test_qdrant_retriever_supports_legacy_search_api() -> None:
+    class Client:
+        def search(self, **kwargs: Any) -> list[dict[str, Any]]:
+            assert kwargs["collection_name"] == "scifact_v1"
+            return [{"id": "legacy-doc", "score": 0.7, "payload": {}}]
+
+    retriever = qdrant_retriever(
+        Client(),
+        {"bge-small-en-v1.5": lambda texts: [[1.0]]},
+    )
+
+    assert retriever("scifact_v1", "claim", 5) == [
+        {"id": "legacy-doc", "score": 0.7}
+    ]

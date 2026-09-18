@@ -1,6 +1,7 @@
 from typer.testing import CliRunner
 
 from cli.gvpctl import app
+from qdrant_client import QdrantClient
 
 runner = CliRunner()
 
@@ -25,3 +26,13 @@ def test_lineage_trace_command_outputs_provenance() -> None:
 
     assert result.exit_code == 0
     assert "vec_0001" in result.output or "document" in result.output.lower()
+
+
+def test_qdrant_client_matches_configured_server_api() -> None:
+    client = QdrantClient(url="http://localhost:6333")
+    try:
+        assert client.get_collections().collections is not None
+        assert hasattr(client, "search")
+        assert hasattr(client, "close")
+    finally:
+        client.close()

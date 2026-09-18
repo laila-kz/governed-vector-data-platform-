@@ -175,14 +175,24 @@ def qdrant_retriever(qdrant_client: Any, embedders: Mapping[str, Callable[[list[
     def retrieve(collection: str, query: str, limit: int) -> Ranking:
         model_name = "bge-large-en-v1.5" if collection == SHADOW_COLLECTION else "bge-small-en-v1.5"
         vector = list(embedders[model_name]([query])[0])
-        result = qdrant_client.query_points(
-            collection_name=collection,
-            query=vector,
-            limit=limit,
-            with_payload=True,
-            with_vectors=False,
-        )
-        points = getattr(result, "points", result)
+        query_points = getattr(qdrant_client, "query_points", None)
+        if callable(query_points):
+            result = query_points(
+                collection_name=collection,
+                query=vector,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+            )
+            points = getattr(result, "points", result)
+        else:
+            points = qdrant_client.search(
+                collection_name=collection,
+                query_vector=vector,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+            )
         rankings: list[dict[str, Any]] = []
         for point in points or []:
             payload = getattr(point, "payload", None)
