@@ -47,21 +47,7 @@ def load_documents(
     quarantine_path: Path = DEFAULT_QUARANTINE_PATH,
 ) -> dict[str, Any]:
     """Load SciFact into Lance after contract validation and sanitization."""
-    valid_documents: list[dict[str, Any]] = []
-    invalid_records: list[dict[str, Any]] = []
-    for line_number, raw_record in _iter_jsonl(Path(corpus_path)):
-        try:
-            canonical = _canonical_scifact_record(raw_record)
-            validated = validate_document(canonical)
-            valid_documents.append(sanitize_document(validated.model_dump()))
-        except (TypeError, ValueError, json.JSONDecodeError) as error:
-            invalid_records.append(
-                {
-                    "record_number": line_number,
-                    "record": raw_record,
-                    "error": str(error),
-                }
-            )
+    valid_documents, invalid_records = load_valid_documents(corpus_path)
 
     chunks = chunk_documents(valid_documents)
     if chunks:
@@ -83,6 +69,28 @@ def load_documents(
             json.dump(report, report_file, indent=2, ensure_ascii=True)
             report_file.write("\n")
     return report
+
+
+def load_valid_documents(
+    corpus_path: Path = DEFAULT_CORPUS_PATH,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return governed documents and rejected records from a SciFact JSONL file."""
+    valid_documents: list[dict[str, Any]] = []
+    invalid_records: list[dict[str, Any]] = []
+    for line_number, raw_record in _iter_jsonl(Path(corpus_path)):
+        try:
+            canonical = _canonical_scifact_record(raw_record)
+            validated = validate_document(canonical)
+            valid_documents.append(sanitize_document(validated.model_dump()))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            invalid_records.append(
+                {
+                    "record_number": line_number,
+                    "record": raw_record,
+                    "error": str(error),
+                }
+            )
+    return valid_documents, invalid_records
 
 
 def main() -> None:  # pragma: no cover

@@ -1,0 +1,276 @@
+# Pre-Publication Fix Plan
+
+This plan records fixes and validation work identified during the repository audit and runtime checks. Items are ordered by risk and publication impact.
+
+## Status Key
+
+- VERIFIED: observed directly in the repository or during a command run.
+- PARTIALLY VERIFIED: some behavior works, but the complete claim could not be verified.
+- NOT VERIFIED: requires implementation or a reproducible runtime setup.
+
+## P0: Correctness and Reproducibility
+
+### 1. Populate a reproducible end-to-end dataset
+
+Status: NOT VERIFIED
+
+- Run the SciFact ingestion pipeline from raw source data through contracts, sanitization, chunking, Lance, DuckDB, and Qdrant.
+- Confirm the catalog contains documents, chunks, active baseline vectors, and lineage records.
+- Confirm the baseline Qdrant collection `scifact_v1` and alias `vectors_live` exist.
+- Record the exact commands, dataset counts, model versions, and generated artifact locations.
+- Ensure the process is repeatable from a clean checkout without relying on pre-existing local database files.
+
+Why: The current catalog has zero indexed vectors, so migration and retrieval behavior have only been smoke-tested with empty data.
+
+### 2. Install and verify the declared embedding dependency
+
+Status: VERIFIED GAP
+
+- Install dependencies from `requirements.txt` into the project virtual environment.
+- Confirm `fastembed` imports successfully.
+- Download or initialize the configured embedding models and document model-cache requirements.
+- Verify embedding dimensions match the model registry contracts: 384 dimensions for v1 and 1024 dimensions for v2.
+- Add a startup or preflight check that reports a clear error when the embedding provider is unavailable.
+
+Why: `fastembed` is declared but was missing from the active environment; automatic quality-gate and real migration commands failed before retrieval.
+
+### 3. Make the CLI work with the supported Qdrant client API
+
+Status: PARTIALLY VERIFIED
+
+- Keep the explicit `QdrantClient.close()` lifecycle handling added to `cli/gvpctl.py` and `cli/chaos.py`.
+- Pin or constrain a tested Qdrant client/server compatibility range.
+- Add an automated CLI integration test against the configured Qdrant version.
+- Remove or clearly report the client/server compatibility warning observed with client 1.19.0 and server 1.8.4.
+
+Why: The installed Qdrant client is not a context manager, and the original CLI commands failed with `AttributeError: __enter__`.
+
+### 4. Run a populated migration lifecycle
+
+Status: NOT VERIFIED
+
+- With real baseline vectors present, run:
+  - `migrate plan`
+  - `migrate apply`
+  - `quality-gate check`
+  - `cutover execute`
+  - `cutover rollback`
+- Verify that the target collection is created with the correct dimensions.
+- Verify migrated vector counts and catalog active flags.
+- Verify alias changes in Qdrant before and after cutover.
+- Verify the routing policy and migration event history after cutover and rollback.
+- Confirm rollback succeeds against an existing baseline collection.
+
+Why: The smoke test cutover worked only because the migration had zero vectors; rollback failed because `scifact_v1` did not exist.
+
+### 5. Make the IR evaluator perform real retrieval
+
+Status: VERIFIED GAP
+
+- Replace the CLI evaluator's empty-ranking placeholder with a retriever backed by the baseline and target Qdrant collections.
+- Embed each benchmark query with the correct model.
+- Query the relevant collection and pass ranked document IDs into the metric functions.
+- Record retrieval latency for each model, including p50 and p95 values.
+- Persist evaluation results and expose the evaluated query count and error count.
+- Add an integration test proving that a known relevant document affects Recall, NDCG, and MRR.
+
+Why: `python -m evaluation.metrics` completed for 300 queries but used empty rankings, producing zero for every retrieval metric. The README benchmark values are not reproduced by the current evaluator.
+
+### 6. Reconcile benchmark claims with measured output
+
+Status: VERIFIED GAP
+
+- Remove or label the README benchmark table values as illustrative until they are produced by a reproducible run.
+- Replace them with measured baseline/target values after real retrieval evaluation succeeds.
+- Include dataset version, query count, collection names, model versions, and run date.
+- Ensure latency and cost values come from actual instrumentation rather than static examples.
+- Update `docs/IR_BENCHMARK_GUIDE.md` and `docs/RUNBOOK_MIGRATION.md` to match the measured workflow.
+
+Why: The repository reports benchmark improvements such as Recall@10 0.812 to 0.842, while the current evaluator returns all zeros.
+
+## P1: Quality Gates and Safety
+
+### 7. Make quality-gate execution fail clearly and safely
+
+Status: PARTIALLY VERIFIED
+
+- Treat missing embedding dependencies, missing collections, empty collections, and retrieval exceptions as explicit preflight failures.
+- Do not authorize cutover when the benchmark cannot be evaluated meaningfully.
+- Ensure failed evaluation runs are persisted with a useful failure reason.
+- Verify that baseline and shadow errors contribute to the gate error rate.
+- Add tests for empty benchmark results and unavailable collections.
+- Confirm `migrate apply` does not mark a migration as successfully complete when its automatic quality gate cannot run.
+
+Why: `migrate apply` completed the empty migration and then failed while initializing FastEmbed. The migration was left completed even though quality evaluation did not run.
+
+### 8. Harden cutover and rollback preconditions
+
+Status: PARTIALLY VERIFIED
+
+- Require the baseline and shadow collections to exist before alias operations.
+- Validate that `vectors_live` currently points to the expected collection before rollback.
+- Make policy-file updates and Qdrant alias updates recoverable if either side fails.
+- Add an explicit dry-run or preflight command for cutover readiness.
+- Test failure cases where the source collection is absent, the alias is absent, or the policy write fails.
+
+Why: Cutover changed routing metadata, but rollback failed because the source collection was absent.
+
+### 9. Exercise real chaos behavior
+
+Status: PARTIALLY VERIFIED
+
+- Run chaos injection against a populated pending migration.
+- Confirm non-zero backoffs, retry behavior, circuit-breaker behavior, and catalog transaction safety.
+- Verify that active live traffic and Lance source data remain unchanged after injected failures.
+- Add a command-level test for `gvpctl chaos inject` using a fake Qdrant client or isolated test service.
+
+Why: The chaos command completed with integrity flags true, but zero vectors meant no batches existed, so no failures, backoffs, or circuit opening were exercised.
+
+## P1: Security and Infrastructure
+
+### 10. Remove insecure default credentials from the documented deployment path
+
+Status: VERIFIED RISK
+
+- Remove `admin/admin` from the normal deployment configuration.
+- Require credentials through environment variables or a local-only `.env` file excluded from Git.
+- Document placeholder variable names without committing real values.
+- Add a startup warning or fail-fast behavior when default credentials are used outside an explicitly local profile.
+- Review PostgreSQL and Grafana exposure on host ports.
+
+Why: Docker Compose contains default Marquez/PostgreSQL and Grafana credentials and publishes services broadly on localhost. This is unsuitable as a production claim without stronger configuration.
+
+### 11. Add service health checks and startup documentation consistently
+
+Status: PARTIALLY VERIFIED
+
+- Add health checks for Marquez, Marquez Web, Prometheus, and Grafana, not only Qdrant/PostgreSQL.
+- Document the separate FastAPI startup because it is not in Docker Compose.
+- Add a compose profile or service for FastAPI if the intended claim is one-command platform startup.
+- Add exact endpoint checks and expected responses to the runbook.
+
+Why: Docker Compose starts five infrastructure services, but FastAPI must be started separately with Uvicorn.
+
+### 12. Pin reproducible dependency versions
+
+Status: NOT VERIFIED
+
+- Replace open-ended minimum versions with a tested lock or constraints file.
+- Record Python version and platform assumptions.
+- Verify the Qdrant client/server pairing and FastEmbed compatibility.
+- Rebuild the environment from scratch and rerun tests and pipeline commands.
+
+Why: The current requirements allow dependency combinations that produced a Qdrant compatibility warning and missing runtime functionality.
+
+## P2: Testing and Maintainability
+
+### 13. Preserve the current test threshold in CI
+
+Status: VERIFIED
+
+- Keep the full suite at or above 90% coverage.
+- Add CI execution for the full test suite and coverage threshold.
+- Include integration tests that require Qdrant only in an explicitly configured integration job.
+- Keep generated `.coverage` and `data/catalog.duckdb` artifacts out of ordinary source commits unless there is a deliberate reason to version them.
+
+Current evidence: 73 tests passed and total coverage reached 90% locally.
+
+### 14. Add API contract and runtime tests
+
+Status: PARTIALLY VERIFIED
+
+- Test every documented FastAPI endpoint with valid and invalid requests.
+- Test search behavior with a real or deterministic fake Qdrant backend.
+- Test missing lineage returns 404 and malformed request bodies return useful 4xx responses.
+- Test routing updates, policy persistence, and metrics output.
+- Verify API documentation examples match actual JSON responses.
+
+Why: Basic API tests exist, but the documented endpoint behavior and real Qdrant path are not fully verified with populated data.
+
+### 15. Add a clean-checkout smoke test
+
+Status: NOT VERIFIED
+
+- Start from a clean environment and empty data directories.
+- Install dependencies.
+- Start Docker services.
+- Run ingestion, embedding, migration, evaluation, cutover, rollback, and API checks.
+- Make this executable through a documented script or Make target.
+- Fail when required data, models, or services are absent instead of silently falling back to fake behavior.
+
+## P2: Documentation and Portfolio Accuracy
+
+### 16. Refresh portfolio screenshots from the current local stack
+
+Status: PARTIALLY VERIFIED
+
+- Re-capture Marquez, Grafana, and Qdrant screenshots from the current environment after real data is loaded.
+- Ensure screenshots show the same service versions, vector counts, aliases, and metrics described in the README.
+- Replace stale or external-looking dashboard captures.
+- Confirm the demo GIF commands and migration IDs correspond to a reproducible run.
+
+Why: The screenshots are valid image files and referenced by the README, but the Qdrant image shows historical vector state and the Grafana image contains stale-looking dashboard data.
+
+### 17. Correct README and guide status statements
+
+Status: VERIFIED GAP
+
+- Update the README test count from 68 to the current verified count after the final test run.
+- State clearly that FastAPI runs separately from Docker Compose.
+- Mark benchmark figures as illustrative or replace them with measured results.
+- Document the missing-data and model-dependency prerequisites.
+- Update Week 5 checkboxes only after each item is actually verified.
+- Remove claims of zero-downtime rollback until populated rollback has been tested.
+
+### 18. Repair documentation formatting and encoding
+
+Status: VERIFIED GAP
+
+- Fix malformed JSON examples and escaped characters in `docs/API_REFERENCE.md`.
+- Replace corrupted non-ASCII characters in README/docs with valid UTF-8 or ASCII.
+- Validate Markdown code fences, links, image paths, and tables.
+- Run a documentation link/check command before publication.
+
+Why: The API reference output contains malformed escaped JSON and visibly corrupted characters such as `â€”` and control-character artifacts.
+
+### 19. Add a truthful setup and troubleshooting guide
+
+Status: PARTIALLY VERIFIED
+
+Document:
+
+- Python and Docker prerequisites.
+- Virtual environment creation and dependency installation.
+- FastEmbed model download/cache behavior.
+- Docker startup order and health checks.
+- FastAPI startup command.
+- SciFact ingestion command and expected record counts.
+- Qdrant collection and alias checks.
+- How to reset local DuckDB, Lance, and Qdrant state safely.
+- Common failures: missing FastEmbed, Qdrant version mismatch, absent baseline collection, empty catalog, and failed rollback.
+
+## Recommended Implementation Order
+
+1. Create a reproducible clean-checkout ingestion and embedding run.
+2. Install/pin compatible dependencies, especially FastEmbed and Qdrant.
+3. Make evaluation query real populated collections and remove empty-ranking behavior.
+4. Harden quality-gate, cutover, and rollback preconditions.
+5. Run a populated migration and real chaos test.
+6. Add integration/API/clean-checkout tests.
+7. Refresh screenshots and replace illustrative README metrics.
+8. Correct documentation formatting, setup instructions, and completion checklists.
+9. Run the full verification suite and publish only claims supported by captured output.
+
+## Publication Gate
+
+Do not publish the project as a completed zero-downtime governed vector migration platform until these are verified:
+
+- A clean checkout can reproduce the pipeline.
+- Baseline and shadow Qdrant collections contain real vectors.
+- FastEmbed is installed and model initialization succeeds.
+- The quality gate evaluates non-empty rankings.
+- Cutover and rollback both succeed with real collections.
+- Chaos injection exercises retries or circuit breaking on real batches.
+- README metrics match captured evaluation output.
+- Screenshots and demo artifacts match the current runtime state.
+- Tests pass at or above the documented coverage threshold.
