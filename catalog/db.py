@@ -80,14 +80,15 @@ class CatalogDB:
         if not records:
             return 0
         columns = list(records[0])
-        if not columns or any(set(record) != set(columns) for record in records):
+        col_set = set(columns)
+        if not columns or any(set(record) != col_set for record in records):
             raise ValueError("All rows must have the same columns")
         quoted_columns = ", ".join(f'"{column}"' for column in columns)
-        placeholders = ", ".join("?" for _ in columns)
-        values = [tuple(record[column] for column in columns) for record in records]
-        self.connection.executemany(
-            f'INSERT INTO "{table}" ({quoted_columns}) VALUES ({placeholders})',
-            values,
+        import pyarrow as pa
+
+        tbl = pa.Table.from_pylist(records)
+        self.connection.execute(
+            f'INSERT INTO "{table}" ({quoted_columns}) SELECT * FROM tbl'
         )
         return len(records)
 

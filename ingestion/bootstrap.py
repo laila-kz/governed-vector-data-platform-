@@ -106,21 +106,22 @@ def materialize_catalog(
 ) -> None:
     """Persist governed document, chunk, strategy, model, and vector metadata."""
     strategy = ChunkingStrategy.from_yaml(DEFAULT_STRATEGY_PATH)
-    catalog.insert_documents(_document_rows(documents))
-    catalog.insert_chunk_strategies(
-        [{
-            "strategy_name": strategy.strategy_name,
-            "strategy_version": strategy.version,
-            "splitter_type": strategy.splitter_type,
-            "chunk_size_tokens": strategy.chunk_size_tokens,
-            "chunk_overlap_tokens": strategy.chunk_overlap_tokens,
-            "tokenizer_name": strategy.tokenizer,
-            "pii_masked_flag": True,
-        }]
-    )
-    catalog.insert_chunks(_chunk_rows(chunks))
-    catalog.insert_embedding_models([_model_row(model)])
-    catalog.insert_vectors(_vector_rows(chunks, model, collection))
+    with catalog.transaction():
+        catalog.insert_documents(_document_rows(documents))
+        catalog.insert_chunk_strategies(
+            [{
+                "strategy_name": strategy.strategy_name,
+                "strategy_version": strategy.version,
+                "splitter_type": strategy.splitter_type,
+                "chunk_size_tokens": strategy.chunk_size_tokens,
+                "chunk_overlap_tokens": strategy.chunk_overlap_tokens,
+                "tokenizer_name": strategy.tokenizer,
+                "pii_masked_flag": True,
+            }]
+        )
+        catalog.insert_chunks(_chunk_rows(chunks))
+        catalog.insert_embedding_models([_model_row(model)])
+        catalog.insert_vectors(_vector_rows(chunks, model, collection))
 
 
 def reconcile_vector_catalog(
@@ -130,16 +131,50 @@ def reconcile_vector_catalog(
     collection: str = DEFAULT_COLLECTION_NAME,
 ) -> int:
     """Insert missing baseline vector metadata without duplicating catalog rows."""
-    existing = {
-        str(row[0])
-        for row in catalog.query("SELECT vector_id FROM vectors WHERE collection_name = ?", [collection])
-    }
-    rows = [
-        row for row in _vector_rows(chunks, model, collection)
-        if row["vector_id"] not in existing
-    ]
-    if rows:
-        catalog.insert_vectors(rows)
+    strategy = ChunkingStrategy.from_yaml(DEFAULT_STRATEGY_PATH)
+    with catalog.transaction():
+        if not catalog.query(
+            "SELECT 1 FROM chunk_strategies WHERE strategy_name = ? AND strategy_version = ?",
+            [strategy.strategy_name, strategy.version],
+        ):
+            catalog.insert_chunk_strategies(
+                [{
+                    "strategy_name": strategy.strategy_name,
+                    "strategy_version": strategy.version,
+                    "splitter_type": strategy.splitter_type,
+                    "chunk_size_tokens": strategy.chunk_size_tokens,
+                    "chunk_overlap_tokens": strategy.chunk_overlap_tokens,
+                    "tokenizer_name": strategy.tokenizer,
+                    "pii_masked_flag": True,
+                }]
+            )
+        if not catalog.query(
+            "SELECT 1 FROM embedding_models WHERE model_name = ? AND model_version = ?",
+            [model.payload_model_name, model.model_version],
+        ):
+            catalog.insert_embedding_models([_model_row(model)])
+
+        existing_chunks = {
+            str(row[0])
+            for row in catalog.query("SELECT chunk_id FROM chunks")
+        }
+        chunk_rows = [
+            chunk for chunk in _chunk_rows(chunks)
+            if chunk["chunk_id"] not in existing_chunks
+        ]
+        if chunk_rows:
+            catalog.insert_chunks(chunk_rows)
+
+        existing = {
+            str(row[0])
+            for row in catalog.query("SELECT vector_id FROM vectors WHERE collection_name = ?", [collection])
+        }
+        rows = [
+            row for row in _vector_rows(chunks, model, collection)
+            if row["vector_id"] not in existing
+        ]
+        if rows:
+            catalog.insert_vectors(rows)
     return len(rows)
 
 
@@ -155,8 +190,14 @@ def bootstrap_baseline(
     qdrant_client: Any | None = None,
 ) -> dict[str, Any]:
     """Run validation, Lance persistence, catalog materialization, and Qdrant ingest."""
-    report = load_documents(corpus_path, dataset_path, quarantine_path)
     documents, invalid_records = load_valid_documents(corpus_path)
+    report = load_documents(
+        corpus_path,
+        dataset_path,
+        quarantine_path,
+        documents=documents,
+        invalid_records=invalid_records,
+    )
     chunks = read_chunks(dataset_path)
     model = BASELINE_MODEL_V1
     client = qdrant_client or QdrantClient(url=qdrant_url)

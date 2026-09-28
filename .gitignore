@@ -4,3 +4,28 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 /data/qdrant_storage/
+
+
+
+# ─── Databases & state ────────────────────────────────────────────
+*.duckdb
+*.duckdb.wal
+*.duckdb.tmp
+data/catalog.duckdb
+data/catalog.duckdb.wal
+data/test_catalog*.duckdb*
+data/*.duckdb*
+
+# ─── Lance transaction/version state (regenerated) ────────────────
+data/lance_lakehouse/**/_transactions/
+data/lance_lakehouse/**/_versions/
+data/lance_lakehouse/**/data/
+
+# ─── Large raw datasets (fetched by download script) ──────────────
+data/raw/scifact/corpus.jsonl
+data/raw/scifact/queries.jsonl
+data/raw/scifact/qrels/
+
+# ─── Local tooling logs ───────────────────────────────────────────
+tools/*.log
+tools/*.err.log

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from chunking.chunker import DEFAULT_DATASET_PATH, chunk_documents, write_chunks
-from contracts.contract_validator import validate_document
+from contracts.contract_validator import load_contract, validate_document
 from ingestion.sanitization import sanitize_document
 
 DEFAULT_CORPUS_PATH = Path("data/raw/scifact/corpus.jsonl")
@@ -45,9 +45,15 @@ def load_documents(
     corpus_path: Path = DEFAULT_CORPUS_PATH,
     dataset_path: Path = DEFAULT_DATASET_PATH,
     quarantine_path: Path = DEFAULT_QUARANTINE_PATH,
+    *,
+    documents: list[dict[str, Any]] | None = None,
+    invalid_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Load SciFact into Lance after contract validation and sanitization."""
-    valid_documents, invalid_records = load_valid_documents(corpus_path)
+    if documents is None or invalid_records is None:
+        valid_documents, invalid_records = load_valid_documents(corpus_path)
+    else:
+        valid_documents = documents
 
     chunks = chunk_documents(valid_documents)
     if chunks:
@@ -75,12 +81,13 @@ def load_valid_documents(
     corpus_path: Path = DEFAULT_CORPUS_PATH,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return governed documents and rejected records from a SciFact JSONL file."""
+    contract = load_contract()
     valid_documents: list[dict[str, Any]] = []
     invalid_records: list[dict[str, Any]] = []
     for line_number, raw_record in _iter_jsonl(Path(corpus_path)):
         try:
             canonical = _canonical_scifact_record(raw_record)
-            validated = validate_document(canonical)
+            validated = validate_document(canonical, contract=contract)
             valid_documents.append(sanitize_document(validated.model_dump()))
         except (TypeError, ValueError, json.JSONDecodeError) as error:
             invalid_records.append(

@@ -37,9 +37,12 @@ class DocumentRecord(BaseModel):
     metadata: DocumentMetadata
 
 
-def load_contract(contract_path: Path = DEFAULT_CONTRACT_PATH) -> dict[str, Any]:
-    """Load and minimally validate the YAML contract configuration."""
-    with Path(contract_path).open(encoding="utf-8") as contract_file:
+from functools import lru_cache
+
+
+@lru_cache(maxsize=16)
+def _load_contract_cached(resolved_path: str) -> dict[str, Any]:
+    with Path(resolved_path).open(encoding="utf-8") as contract_file:
         contract = yaml.safe_load(contract_file)
 
     if not isinstance(contract, dict):
@@ -48,6 +51,11 @@ def load_contract(contract_path: Path = DEFAULT_CONTRACT_PATH) -> dict[str, Any]
         if key not in contract:
             raise ValueError(f"The document contract is missing {key!r}.")
     return contract
+
+
+def load_contract(contract_path: Path | str = DEFAULT_CONTRACT_PATH) -> dict[str, Any]:
+    """Load and minimally validate the YAML contract configuration."""
+    return _load_contract_cached(str(Path(contract_path).resolve()))
 
 
 def _validate_contract_rules(

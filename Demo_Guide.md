@@ -1,526 +1,588 @@
-# 🎬 Governed Vector Data Platform — Demo Video Guide
+# 🎬 Governed Vector Data Platform — Demo Guide
 
-> **Purpose**: A precise, step-by-step script to run and film the full end-to-end demo.  
-> **Total estimated runtime**: ~10–15 minutes of recording.
-
----
-
-## 🗺️ Demo Story Arc
-
-| # | Scene | What you show |
-|---|-------|---------------|
-| 1 | Environment setup | Docker services starting, FastAPI launching |
-| 2 | Data ingestion | Downloading SciFact, bootstrapping baseline |
-| 3 | Platform status | `gvpctl status`, vector counts, live alias |
-| 4 | Lineage trace | `gvpctl lineage trace` — backward provenance |
-| 5 | Migration plan | Pre-flight cost/drift analysis table |
-| 6 | Shadow writing | Live Rich progress bar filling `scifact_v2_shadow` |
-| 7 | Quality gate | IR metrics table — Recall, NDCG, MRR |
-| 8 | Atomic cutover | Zero-downtime alias swap |
-| 9 | Observability | Qdrant dashboard → Marquez lineage → Grafana |
-| 10 | Chaos + rollback | Fault injection, instant rollback |
+> **Purpose**: run and film the end-to-end demo without re-doing slow setup work.
+> **Recording runtime**: ~10–15 minutes.
+>
+> ## ⚡ Read this first
+>
+> This guide is split into two parts, and the split matters:
+>
+> | Part | What it is | How often |
+> |---|---|---|
+> | **Part A — One-Time Build** | Expensive setup that creates the baseline state. **Already completed.** | Never again |
+> | **Part B — Daily Startup** | Fast service restart. No rebuilding. | Once per filming day |
+> | **Part C — The Demo** | The actual runbook, scene by scene. | Every recording |
+>
+> The single most important rule: **never run `python -m ingestion.bootstrap` while filming.** It takes ~40 minutes and cannot be interrupted cheaply. Part A already did it for you.
 
 ---
 
-## ✅ Pre-Demo Checklist
+## 📊 Part A — One-Time Build (✅ ALREADY DONE — DO NOT RE-RUN)
 
-Run through this once **before** hitting record.
+Everything in this section has **already been executed and verified** against this machine. The state it produced is committed to disk and survives restarts.
 
-- [ ] Docker Desktop is running
-- [ ] Terminal is open at the project root (`Governed Vector Data Platform/`)
-- [ ] `.venv` is activated (`& .venv\Scripts\Activate.ps1`)
-- [ ] All dependencies installed (`pip install -r requirements.txt`)
-- [ ] Ports 6333, 3000, 3001, 5000, 9090, 8000 are free
-- [ ] Terminal font size bumped up (≥14pt) for screen readability
+### A.1 What was built, and the verified result
+
+| # | Command | Status | Verified result |
+|---|---|---|---|
+| 1 | `docker compose up -d` | ✅ Done | 6 containers up; `gvp_qdrant` + `gvp_postgres` healthy |
+| 2 | `python -m ingestion.download_scifact` | ✅ Done | `corpus.jsonl` 8.1 MB, `queries.jsonl` 210 KB, `qrels/test.tsv` 5.4 KB |
+| 3 | `python -m ingestion.bootstrap` | ✅ Done | 5,183 documents · 7,620 chunks · 7,620 vectors · catalog synced |
+| 4 | `python -m cli.gvpctl migrate plan ...` | ✅ Done | Plan `mig_77407a443e4d` created, status `planned` |
+
+The build wrote state to three places, all persistent:
+
+| Artifact | Location | Survives restart? |
+|---|---|---|
+| Sanitised corpus + chunks | `data/lance_lakehouse/` | ✅ plain files |
+| Governed provenance catalog | `data/catalog.duckdb` | ✅ plain file |
+| 7,620 embedded vectors | `data/qdrant_storage/` | ✅ bind-mounted (`docker-compose.yml:9`) |
+| Marquez database | `marquez_pgdata` volume | ✅ named volume |
+
+### A.2 Verify the build is still good (10 seconds, safe any time)
+
+Run this if you ever want reassurance. All three are read-only and instant:
+
+```powershell
+Invoke-RestMethod "http://localhost:6333/collections/scifact_v1" | Select-Object -ExpandProperty result | Select-Object status, points_count
+python -m cli.gvpctl status
+```
+
+Expect `status = green` and `points_count = 7620`.
+
+### A.3 ⚠️ Why you must not re-run bootstrap
+
+`python -m ingestion.bootstrap` is **not idempotent in the way you would expect**, despite what older notes claimed:
+
+- The *catalog* half is idempotent — `reconcile_vector_catalog` (`ingestion/bootstrap.py:127`) skips rows that already exist.
+- The *embedding* half is **not**. `ingestion/bootstrap.py:211` calls `ingest_chunks` unconditionally, which re-embeds all 7,620 chunks through `bge-small-en-v1.5` on CPU **every single time**. Measured: **~40 minutes**, with no progress output until the very end.
+- DuckDB allows exactly one writing process per database file. If a bootstrap is already running, a second one dies instantly with `_duckdb.IOException: ... being used by another process`. That is what happened during this build — it is not a code fault, it is the single-writer rule.
+
+**So: build once, then only read.**
+
+### A.4 Blocked: the migration scenes
+
+Six scenes depend on a second embedding model, `BAAI/bge-large-en-v1.5`, which is **not yet on this machine**:
+
+| Blocked command | Scene | Needs |
+|---|---|---|
+| `migrate apply` | Shadow writing | bge-large |
+| `quality-gate check` | Quality gate | bge-large |
+| `cutover execute` | Cutover | bge-large |
+| `cutover rollback` | Rollback | bge-large |
+| `chaos inject` | Chaos | bge-large |
+
+`model.onnx` for that model is **1,336.9 MB**, and measured throughput on this connection was **0.05 MB/s → ~7.2 hours**. Current cache state: **173 MB / 1,336.9 MB (12.9%)**.
+
+To finish the build when you have time and bandwidth:
+
+```powershell
+$env:HF_TOKEN = "hf_..."                                  # avoid the anonymous rate limit
+.\.venv\Scripts\python.exe -u tools\fetch_bge_large.py    # resumable; safe to re-run
+```
+
+It is safe to interrupt and resume. Once the cache reaches 1,336.9 MB, run Part D to finish the build.
+
+### A.5 Commands that generate a NEW id every time
+
+`migrate plan` does **not** produce a fixed id. Each invocation creates a new one and leaves the old row in the catalog, so repeated runs accumulate duplicate `planned` migrations. The current catalog holds exactly one:
+
+```
+mig_77407a443e4d   status=planned   7620 vectors   0 migrated
+```
+
+Always read the id off the plan table and pass that exact value to `apply`, `quality-gate`, `cutover`, and `chaos`. Earlier notes that hardcoded `mig_scifact_v1_to_v2` were wrong — that id does not exist.
+
+> 📌 **If you re-run `migrate plan` while rehearsing**, you will end up with two plans and will not know which one the later scenes should use. Either note the newest id, or delete the stale row:
+>
+> ```powershell
+> python -c "from catalog.db import CatalogDB; c=CatalogDB(); c.connection.execute(\"DELETE FROM migrations WHERE migration_id <> 'mig_77407a443e4d' AND status='planned' AND migrated_vectors=0\"); c.close()"
+> ```
 
 ---
 
-## 📁 Terminal Setup
+## 🚀 Part B — Daily Startup (2 minutes, before every recording)
 
-Open PowerShell and navigate to the project root:
+Do **not** rebuild anything. Just wake the services up.
+
+**Step 1 — Start Docker Desktop** and wait for the whale to settle.
+
+**Step 2 — In your main terminal:**
 
 ```powershell
 cd "C:\Users\kheza\Desktop\Data Engineering\Governed Vector Data Platform"
 & .venv\Scripts\Activate.ps1
+docker compose up -d
+docker compose ps
 ```
 
-> 💡 **Film tip**: Keep browser + terminal side by side. Terminal on the left (CLI commands), browser on the right (UIs). Pre-open all browser tabs before recording.
+Expected — all six services `Up`, with `healthy` on the two that have healthchecks:
+
+| Container | Status | Port |
+|---|---|---|
+| `gvp_qdrant` | Up (healthy) | 6333 |
+| `gvp_postgres` | Up (healthy) | — |
+| `gvp_marquez` | Up | 5000 |
+| `gvp_marquez_web` | Up | 3000 |
+| `gvp_prometheus` | Up | 9090 |
+| `gvp_grafana` | Up | 3001 |
+
+**Step 3 — In a second terminal tab, start the control plane:**
+
+```powershell
+cd "C:\Users\kheza\Desktop\Data Engineering\Governed Vector Data Platform"
+& .venv\Scripts\Activate.ps1
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
+
+Leave this tab running for the whole demo.
+
+**Step 4 — Warm the search model (important).** The first search loads the embedding model into memory and takes ~2.5s; later ones take ~0.4s. Fire three throwaway searches now so you never show a stall on camera:
+
+```powershell
+1..3 | ForEach-Object { $null = Invoke-RestMethod -Method POST -Uri "http://localhost:8000/v1/search" -ContentType "application/json" -Body '{"query":"warm up","top_k":3}' }
+```
+
+**Step 5 — Prime Grafana.** The telemetry panels only plot what has been observed. Fire the real searches from Scene 8 *before* you open Grafana in Scene 10, or the panels will be empty.
+
+**Step 6 — Bump your terminal font to 14pt+ and pre-open every browser tab** (list in Part C, Scene 0).
+
+### ✅ Pre-Recording Checklist
+
+- [ ] Docker Desktop running, all 6 containers `Up`
+- [ ] `.venv` activated in both terminals
+- [ ] uvicorn running on 8000, `/health` returns `{"status":"ok"}`
+- [ ] Three warm-up searches fired
+- [ ] `python -m cli.gvpctl status` reports `total_indexed_vectors = 7620`
+- [ ] Terminal font ≥ 14pt
+- [ ] Browser tabs pre-opened (Part C, Scene 0)
+- [ ] **You have NOT run `ingestion.bootstrap`** ✅
 
 ---
 
-## Scene 1 — Start the Infrastructure Stack
+## 🎬 Part C — The Demo Runbook
 
-**What to say**: *"The platform runs on five containerised services. One command brings the entire stack up."*
+Every output block below is **real, captured from this machine**, not illustrative.
 
-```powershell
-docker compose up -d
-```
+### Scene 0 — Browser tabs (pre-open, do not film)
 
-Wait ~20 seconds, then verify all services are healthy:
+| Tab | URL | Used in |
+|---|---|---|
+| Qdrant dashboard | http://localhost:6333/dashboard | Scene 3 |
+| FastAPI health | http://localhost:8000/health | Scene 1 |
+| FastAPI docs | http://localhost:8000/docs | Scene 8 |
+| Grafana | http://localhost:3001 (`admin`/`admin`) | Scene 10 |
+| Prometheus | http://localhost:9090 | Scene 10 |
+| Marquez | http://localhost:3000 | Scene 9 |
+
+---
+
+### Scene 1 — Infrastructure Stack
+
+**Say**: *"The platform runs on six containerised services. One command brings the entire stack up."*
 
 ```powershell
 docker compose ps
 ```
 
-Expected — all services show `Up` or `healthy`:
+```
+NAME              STATE     STATUS                  PORTS
+gvp_grafana       running   Up 57 minutes           0.0.0.0:3001->3000/tcp
+gvp_marquez       running   Up 57 minutes           0.0.0.0:5000-5001->5000-5001/tcp
+gvp_marquez_web   running   Up 57 minutes           0.0.0.0:3000->3000/tcp
+gvp_postgres      running   Up 57 minutes (healthy) 0.0.0.0:5432->5432/tcp
+gvp_prometheus    running   Up 57 minutes           0.0.0.0:9090->9090/tcp
+gvp_qdrant        running   Up 57 minutes (healthy) 0.0.0.0:6333-6334->6333-6334/tcp
+```
 
-| Container | Status |
-|---|---|
-| `gvp_qdrant` | Up (healthy) |
-| `gvp_postgres` | Up (healthy) |
-| `gvp_marquez` | Up |
-| `gvp_marquez_web` | Up |
-| `gvp_prometheus` | Up |
-| `gvp_grafana` | Up |
-
-**Then open your browser and briefly show each UI (~15 seconds each):**
-
-| Service | URL |
-|---|---|
-| Qdrant Dashboard | http://localhost:6333/dashboard |
-| Marquez Lineage UI | http://localhost:3000 |
-| Grafana Dashboards | http://localhost:3001 (`admin` / `admin`) |
-| Prometheus | http://localhost:9090 |
+Switch to the browser, show each UI ~10 seconds: Qdrant (6333), Marquez (3000), Grafana (3001), Prometheus (9090).
 
 ---
 
-## Scene 2 — Start the FastAPI Control Plane
+### Scene 2 — Control Plane Health
 
-**What to say**: *"The FastAPI control plane is the operational brain — it routes search traffic, exposes lineage endpoints, and publishes Prometheus telemetry."*
+**Say**: *"The FastAPI control plane routes search traffic, exposes lineage endpoints, and publishes Prometheus telemetry."*
 
-Open a **second terminal tab** and run:
-
-```powershell
-python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
-```
-
-Switch to browser and confirm it is live:
-
-```
 http://localhost:8000/health
-```
-
-Expected JSON response:
 
 ```json
-{
-  "status": "healthy",
-  "active_alias": "vectors_live",
-  "active_model": "bge-small-en-v1.5",
-  "active_version": "1.0.0"
-}
+{ "status": "ok" }
 ```
 
-Also show the auto-generated API docs:
-
-```
-http://localhost:8000/docs
-```
-
-> 💡 Leave FastAPI running in its own tab for the rest of the demo. Switch back to your main terminal for all CLI commands.
+That is the entire response — the endpoint returns only a liveness flag. Then show the generated OpenAPI docs at http://localhost:8000/docs.
 
 ---
 
-## Scene 3 — Download the SciFact Dataset
+### Scene 3 — The Governed Baseline
 
-**What to say**: *"The platform is evaluated against the BEIR SciFact benchmark — 5,183 scientific paper abstracts with expert relevance judgments."*
+**Say**: *"This is the baseline the whole platform is built on: 5,183 validated documents chunked into 7,620 vectors, every one carrying full provenance."*
 
-> ⚠️ **Skip this scene** if `data/raw/scifact/corpus.jsonl` already exists.
-
-In your main terminal:
+Back in the terminal:
 
 ```powershell
-python -m ingestion.download_scifact
+python -m cli.gvpctl status
 ```
 
-Expected output:
+```
+        Governed Vector Platform Status
++----------------------------------------------+
+| Metric                   | Value             |
+|--------------------------+-------------------+
+| active_alias             | vectors_live      |
+| active_model             | bge-small-en-v1.5 |
+| qdrant_collection_health | healthy           |
+| total_indexed_vectors    | 7620              |
+| duckdb_sync              | synced            |
++----------------------------------------------+
+```
+
+> 📌 **Say "7,620", not "15,240".** The 15,240 figure in earlier drafts of this guide was never real — it appears in no code path. The dataset is 7,620 chunks and the Qdrant collection holds exactly 7,620 points.
+
+Now show the Qdrant dashboard: collection `scifact_v1`, **7,620 points**, 384 dimensions, Cosine distance.
+
+---
+
+### Scene 4 — Staleness Report
+
+**Say**: *"Every vector is tracked as active or stale relative to the current model and strategy, so drift is visible before it bites."*
+
+```powershell
+python -m cli.gvpctl staleness
+```
 
 ```
-saved data/raw/scifact/corpus.jsonl (X bytes)
-saved data/raw/scifact/queries.jsonl (X bytes)
-saved data/raw/scifact/qrels/test.tsv (X bytes)
+              Staleness Summary
++-------------------------------------------+
+| Model             | Active | Stale | Risk |
+|-------------------+--------+-------+------|
+| bge-small-en-v1.5 | 7620   | 0     | low  |
+| fixed_size_v1     | 7620   | 0     | low  |
++-------------------------------------------+
+```
+
+> 🔧 **This table was broken until recently.** `cli/gvpctl.py` queried `vectors.strategy_name`, a column that does not exist. The error was swallowed by a bare `except`, so the command silently printed hardcoded zeros — it *looked* like a working report showing "0 active, 0 stale". The strategy name now comes from a join against `chunks`. The numbers above are the real ones.
+
+Also show the same thing over HTTP:
+
+```
+http://localhost:8000/v1/catalog/staleness
+```
+
+```json
+{ "total_vectors": 7620, "stale_vectors": 0, "breakdown": {} }
 ```
 
 ---
 
-## Scene 4 — Bootstrap the Baseline
+### Scene 5 — Vector Lineage Trace
 
-**What to say**: *"Bootstrap validates all documents, writes them to Lance columnar storage, materialises a fully governed DuckDB catalog, and indexes embeddings into Qdrant — all in one command."*
+**Say**: *"Every vector carries a complete backward provenance chain — from the Qdrant point all the way back to the source document, its chunk text, the PII masking state, and the model version."*
 
 ```powershell
-python -m ingestion.bootstrap
+python -m cli.gvpctl lineage trace "vec_0001"
 ```
 
-What happens under the hood:
-1. Documents validated; malformed ones quarantined
-2. Sanitised text persisted to Lance (versioned columnar store)
-3. Document, chunk, model, and vector provenance written to `data/catalog.duckdb`
-4. All 15,240 chunks embedded with `bge-small-en-v1.5` (384-dim) via FastEmbed
-5. Vectors indexed into the `scifact_v1` Qdrant collection
+```
+Vector: vec_0001
+Document -> Chunk -> Model -> Qdrant Index
+vector_id: vec_0001
+document: 4983 (v1)
+chunk: 4983:0000
+model: bge-small-en-v1.5:1.0.0
+collection: scifact_v1
+strategy: fixed_size_v1:1.0.0
+source_uri: beir://scifact/4983
+```
 
-Expected JSON summary printed at completion:
+> ⚠️ **Use `vec_0001`, not `vec_scifact_0001`.** Vector ids are `vec_0001`…`vec_7620` (`embedding/embedder.py:100`). Earlier drafts of this guide used `vec_scifact_0001`, which never existed.
+
+Then show the full provenance including chunk text over HTTP — the strongest single shot in the demo:
+
+```
+http://localhost:8000/v1/catalog/lineage/vec_0001
+```
 
 ```json
 {
-  "valid_document_count": 5183,
-  "invalid_document_count": 0,
-  "catalog_document_count": 5183,
-  "catalog_chunk_count": 15240,
-  "vector_count": 15240,
-  "collection": "scifact_v1",
+  "vector_id": "vec_0001",
+  "collection_name": "scifact_v1",
+  "dimension": 384,
   "model_name": "bge-small-en-v1.5",
-  "model_version": "1.0.0"
+  "model_version": "1.0.0",
+  "chunk_id": "4983:0000",
+  "doc_id": "4983",
+  "doc_version": 1,
+  "chunk_text": "Alterations of the architecture of cerebral white matter in the developing human brain can affect cortical development and result in functional disabilities. A line scan diffusion-weighted magnetic resonance imaging (MRI) sequence with diffusion tensor analysis was applied to measure the apparent diffusion coefficient...",
+  "strategy_name": "fixed_size_v1",
+  "source_uri": "beir://scifact/4983",
+  "content_hash": "6e1e455b22b6012aec0fbd5b942d77f6b9a9e1020ab3e639f6e6758a93e98ca5",
+  "pii_masked_flag": false
 }
 ```
 
-> ⚠️ **First run only** — takes 1–3 minutes. FastEmbed downloads the model (~120 MB) on first use. The script is idempotent and skips reinsertion if the catalog already exists.
-
-**Switch to the Qdrant dashboard** and show the `scifact_v1` collection with 15,240 vectors.
+> 🔧 **A second bug, worth knowing about.** This command used to catch *any* failure and print a hardcoded fake trace — `document: doc-1`, `chunk: doc-1:0000`. Asking for a nonexistent id produced a confident, plausible, completely fabricated answer. It now fails loudly with `no cataloged vector '...'; baseline IDs run vec_0001 to vec_7620`. If you ever see invented provenance, that fallback is back.
 
 ---
 
-## Scene 5 — Platform Status Check
+### Scene 6 — Live Vector Search
 
-**What to say**: *"The `gvpctl status` command gives an operator an instant, real-time health snapshot."*
+**Say**: *"Queries are embedded by the active model and served straight from Qdrant, with per-request telemetry."*
 
-```powershell
-python -m cli.gvpctl status
-```
-
-Expected Rich table:
-
-```
-┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Field            ┃ Value                            ┃
-┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ Active Alias     │ vectors_live                     │
-│ Active Model     │ bge-small-en-v1.5                │
-│ Total Vectors    │ 15,240                           │
-│ Qdrant Status    │ green                            │
-└──────────────────┴──────────────────────────────────┘
-```
-
-Follow up with the staleness report:
+Use the terminal form — it prints only id and score:
 
 ```powershell
-python -m cli.gvpctl staleness
+$r = Invoke-RestMethod -Method POST -Uri "http://localhost:8000/v1/search" -ContentType "application/json" -Body '{"query":"CRISPR-Cas9 genome editing mechanisms","top_k":3}'
+"collection: $($r.collection)"
+$r.results | Format-Table id, score -AutoSize
 ```
+
+```
+collection: vectors_live
+
+id                                        score
+--                                       -----
+b2e95414-397b-57eb-b975-e107e1aeafb4  0.8404053
+8fddfa45-160b-5fab-b719-a331ebc42c2c  0.81772363
+d5fee0a9-a82b-59b2-9c92-22d425fa51dc  0.8021588
+```
+
+> 📌 Two presentation notes:
+> - **Do not paste the raw response into the terminal.** `/v1/search` echoes the full 384-float query vector plus full payloads — roughly 400 lines of noise. Use the projection above, or the Swagger UI at http://localhost:8000/docs.
+> - Fire these searches **before** Scene 8, so the Grafana latency panels have data.
 
 ---
 
-## Scene 6 — Vector Lineage Trace
+### Scene 7 — Migration Plan (pre-flight, no embedding)
 
-**What to say**: *"Every vector carries a complete backward provenance chain — from the Qdrant point ID all the way back to the raw source document, PII masking state, chunk strategy, and model version."*
+**Say**: *"Before a migration touches live infrastructure, the operator generates a pre-flight plan — vector counts, token volume, cost, runtime, and predicted drift, all before a single embedding is computed."*
 
-```powershell
-python -m cli.gvpctl lineage trace "vec_scifact_0001"
-```
-
-Expected Rich output:
-
-```
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Field                    ┃ Value                                            ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ vector_id                │ vec_scifact_0001                                 │
-│ model_name               │ bge-small-en-v1.5                                │
-│ model_version            │ 1.0.0                                            │
-│ chunk_text               │ Alternative splicing generates functional...     │
-│ strategy_name            │ fixed_size_v1                                    │
-│ source_uri               │ s3://scifact-corpus/raw/doc_487.json             │
-│ doc_version              │ 1                                                │
-│ pii_masked_flag          │ True                                             │
-└──────────────────────────┴──────────────────────────────────────────────────┘
-```
-
-**Also show via REST API in browser:**
-
-```
-http://localhost:8000/v1/catalog/lineage/vec_scifact_0001
-```
-
----
-
-## Scene 7 — Pre-Flight Migration Plan
-
-**What to say**: *"Before any migration touches live infrastructure, the operator generates a pre-flight plan. It calculates vector counts, token volume, estimated cost, runtime, and predicted retrieval drift — all before a single embedding is computed."*
+The plan already exists from Part A. Show it without re-running, or re-run to generate a fresh one:
 
 ```powershell
 python -m cli.gvpctl migrate plan "bge-small-en-v1.5" "bge-large-en-v1.5" --approve
 ```
 
-Expected Rich output:
-
 ```
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Change                    ┃ Value                                    ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ model                     │ bge-small-en-v1.5 -> bge-large-en-v1.5  │
-│ strategy                  │ fixed_size_v1 -> fixed_size_v1           │
-│ vector count              │ 15,240                                   │
-│ token volume              │ 1,524,000                                │
-│ estimated API cost        │ $0.000000                                │
-│ estimated duration        │ 45.20s                                   │
-│ predicted retrieval drift │ 0.1824                                   │
-│ status                    │ planned                                  │
-└───────────────────────────┴──────────────────────────────────────────┘
-Migration ID: mig_scifact_v1_to_v2
+                Migration Plan mig_77407a443e4d
++--------------------------------------------------------------------+
+| Change                    | Value                                  |
+|---------------------------+----------------------------------------|
+| model                     | bge-small-en-v1.5 -> bge-large-en-v1.5 |
+| strategy                  | fixed_size_v1 -> fixed_size_v1         |
+| vector count              | 7620                                   |
+| token volume              | 1,624,031                              |
+| estimated API cost        | $0.000000                              |
+| estimated duration        | 12.00s                                 |
+| predicted retrieval drift | 0.0000                                 |
+| status                    | planned                                |
++--------------------------------------------------------------------+
 ```
 
-> 📝 **Note the migration ID** — you'll use it in every subsequent command. It is always `mig_scifact_v1_to_v2`.
+> 📌 **Read the migration id off the table.** It is generated per run — `mig_77407a443e4d` above, a different value each time. Earlier drafts claimed it was always `mig_scifact_v1_to_v2`; that is not true. Also note the real drift estimate is `0.0000` and duration `12.00s`, not the `0.1824` / `45.20s` in earlier drafts.
 
 ---
 
-## Scene 8 — Asynchronous Shadow Writing
+### Scene 8 — Shadow Writing ⛔ *blocked, needs bge-large*
 
-**What to say**: *"The migration worker shadow-writes all target embeddings into a completely isolated `scifact_v2_shadow` collection. Live search traffic is totally unaffected — no downtime, no traffic diversion."*
+**Say**: *"The migration worker shadow-writes target embeddings into an isolated `scifact_v2_shadow` collection, so live search traffic is completely unaffected."*
 
 ```powershell
-python -m cli.gvpctl migrate apply "mig_scifact_v1_to_v2" --approve
+python -m cli.gvpctl migrate apply "mig_77407a443e4d" --approve
 ```
 
-You will see:
-- A Rich progress bar tracking batches (e.g. `Embedding batch 45/238`)
-- Live ETA countdown
-- OpenLineage events being emitted to Marquez in the logs
-
-**While it runs, switch to the browser and show:**
-1. **Qdrant dashboard** → a new `scifact_v2_shadow` collection appearing and filling up
-2. **Marquez UI** → new lineage datasets appearing at http://localhost:3000
-
-> ⚠️ This takes ~45 seconds. Let it complete fully before moving to the next scene.
+**Do not attempt this on filming day.** It requires `bge-large-en-v1.5` (see A.4). Two reasons it is a poor live demo even once available: it re-embeds all 7,620 chunks, and on this CPU `bge-large` is roughly an order of magnitude slower than `bge-small` — expect hours, not the 45 seconds earlier drafts claimed. Complete it as a build step (Part D) and present the finished shadow collection.
 
 ---
 
-## Scene 9 — Automated Quality Gate
-
-**What to say**: *"Once shadow writing completes, the quality gate automatically evaluates both collections against the BEIR ground-truth benchmark. It enforces hard IR thresholds before any cutover is permitted."*
-
-The gate runs automatically at the end of `migrate apply`. You can also run it explicitly:
+### Scene 9 — Quality Gate ⛔ *blocked, needs bge-large*
 
 ```powershell
-python -m cli.gvpctl quality-gate check "mig_scifact_v1_to_v2"
+python -m cli.gvpctl quality-gate check "mig_77407a443e4d"
 ```
 
-Expected output:
-
-```
-Quality Gate Status: PASSED ✅ — Cutover Authorized
-
-┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━┓
-┃ Metric        ┃ Baseline (v1)  ┃ Target (v2)    ┃ Δ Change  ┃ Gate    ┃
-┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━┩
-│ Recall@10     │ 0.812          │ 0.842          │ +3.0%     │ ✅ PASS  │
-│ NDCG@10       │ 0.741          │ 0.784          │ +4.3%     │ ✅ PASS  │
-│ MRR           │ 0.698          │ 0.735          │ +3.7%     │ ✅ PASS  │
-│ Error Rate    │ 0.00           │ 0.00           │ —         │ ✅ PASS  │
-└───────────────┴────────────────┴────────────────┴───────────┴─────────┘
-```
-
-**Explain the gates on camera:**
-- `Recall@10(v2) ≥ Recall@10(v1) - 0.02` — prevents recall regression
-- `NDCG@10(v2) ≥ NDCG@10(v1)` — enforces ranking quality
-- `Error Rate = 0.0` — zero tolerance for failed embeddings
+Also blocked. Note for narration: the gate compares baseline vs target on Recall@10, NDCG@10, MRR, and error rate, and blocks cutover on regression.
 
 ---
 
-## Scene 10 — Zero-Downtime Atomic Cutover
-
-**What to say**: *"The cutover is a single atomic alias swap in Qdrant. `vectors_live` flips from `scifact_v1` to `scifact_v2_shadow` in under 10ms. No downtime. No reindex."*
+### Scene 10 — Atomic Cutover ⛔ *blocked, needs bge-large*
 
 ```powershell
-python -m cli.gvpctl cutover execute "mig_scifact_v1_to_v2" --approve
+python -m cli.gvpctl cutover execute "mig_77407a443e4d" --approve
 ```
 
-Expected output:
-
-```
-✅ Cutover complete.
-   vectors_live → scifact_v2_shadow
-   Catalog updated: 15,240 vectors marked active.
-```
-
-**Switch to Qdrant dashboard** and show:
-- The `vectors_live` alias now points to `scifact_v2_shadow`
-- `bge-large-en-v1.5` (1024-dim) is the active model
-
-Confirm with a fresh status check:
-
-```powershell
-python -m cli.gvpctl status
-```
-
-```
-│ Active Model  │ bge-large-en-v1.5  │
-│ Total Vectors │ 15,240             │
-```
+Blocked. The real command output is a single line — `Migration <id> cut over to vectors_live` — not the multi-line "✅ Cutover complete / Catalog updated: 15,240 vectors marked active" shown in earlier drafts.
 
 ---
 
-## Scene 11 — Live Vector Search via API
+### Scene 11 — Grafana Telemetry (✅ works today)
 
-**What to say**: *"Search queries are now automatically routed to the upgraded model. The API transparently handles embedding, routing, and optional shadow read comparison."*
+**Say**: *"Every operation is instrumented. Grafana scrapes the control plane every five seconds."*
 
-Open the Swagger UI at http://localhost:8000/docs, expand **POST /v1/search**, click **Try it out**, and submit:
+http://localhost:3001 (`admin` / `admin`) → **Governed Vector Platform — Control Plane Telemetry**
 
-```json
-{
-  "query": "What are the molecular mechanisms of CRISPR-Cas9 genome editing?",
-  "top_k": 5
-}
-```
-
-Or run in the terminal:
-
-```powershell
-Invoke-RestMethod -Method POST -Uri "http://localhost:8000/v1/search" `
-  -ContentType "application/json" `
-  -Body '{"query": "CRISPR-Cas9 genome editing mechanisms", "top_k": 5}'
-```
-
----
-
-## Scene 12 — Grafana Telemetry Dashboard
-
-**What to say**: *"Every operation is instrumented. Grafana shows real-time search latencies, shadow read deltas, and stale vector ratios — all scraped from the FastAPI Prometheus endpoint."*
-
-Open: http://localhost:3001 (admin / admin)
-
-Navigate to the **Vector Platform Telemetry** dashboard and show:
-- Search request latency (p95)
-- Stale vector percentage gauge
-- Shadow read latency delta (live vs shadow)
-
-Also show the raw Prometheus metrics exposition:
-
-```
-http://localhost:8000/metrics
-```
-
----
-
-## Scene 13 — Marquez OpenLineage Provenance
-
-**What to say**: *"Every migration emits OpenLineage dataset facets to Marquez — enterprise-grade data lineage showing exactly which document version, chunk strategy, and model produced every vector in production."*
-
-Open: http://localhost:3000
-
-Navigate to **Namespaces → governed-vector-platform** and show:
-- The lineage graph: `scifact_v1` → migration job → `scifact_v2_shadow`
-- Facet details: model name, version, dimensions, provider
-
----
-
-## Scene 14 — Chaos Fault Injection
-
-**What to say**: *"Enterprise resilience means surviving turbulent network conditions. The chaos runner injects HTTP 429 throttling, connection drops, and corrupted payloads during a migration run to validate exponential backoff and catalog rollbacks."*
-
-```powershell
-python -m cli.gvpctl chaos inject --fail-rate 0.4 --migration-id "mig_scifact_v1_to_v2"
-```
-
-Watch for:
-- Injected faults logged in real time
-- Automatic exponential backoff retries
-- Catalog transaction rollbacks on terminal failure
-- Final resilience report
-
----
-
-## Scene 15 — Instant Rollback
-
-**What to say**: *"If anything goes wrong post-cutover, rollback is a single command. It atomically swaps `vectors_live` back to `scifact_v1` — under 10ms, zero data loss."*
-
-```powershell
-python -m cli.gvpctl cutover rollback "mig_scifact_v1_to_v2" --approve
-```
-
-Expected output:
-
-```
-✅ Rollback complete.
-   vectors_live → scifact_v1
-   Catalog restored: bge-small-en-v1.5 (384d) active.
-```
-
-Confirm:
-
-```powershell
-python -m cli.gvpctl status
-```
-
----
-
-## Scene 16 — Closing: Test Suite (Optional)
-
-Run the test suite to show platform stability:
-
-```powershell
-python -m pytest tests/ -v --tb=short
-```
-
-Expected result:
-
-```
-73 passed, 0 failed — 90% coverage
-```
-
----
-
-## 🔁 Full Command Sequence — Quick Reference
-
-```powershell
-# ── Infrastructure ──────────────────────────────────────────────────────────
-docker compose up -d
-# In a separate tab:
-python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
-
-# ── Data Ingestion (first run only) ─────────────────────────────────────────
-python -m ingestion.download_scifact
-python -m ingestion.bootstrap
-
-# ── Platform Inspection ──────────────────────────────────────────────────────
-python -m cli.gvpctl status
-python -m cli.gvpctl staleness
-python -m cli.gvpctl lineage trace "vec_scifact_0001"
-
-# ── Full Migration Lifecycle ──────────────────────────────────────────────────
-python -m cli.gvpctl migrate plan "bge-small-en-v1.5" "bge-large-en-v1.5" --approve
-python -m cli.gvpctl migrate apply "mig_scifact_v1_to_v2" --approve
-python -m cli.gvpctl quality-gate check "mig_scifact_v1_to_v2"
-python -m cli.gvpctl cutover execute "mig_scifact_v1_to_v2" --approve
-
-# ── Resilience ───────────────────────────────────────────────────────────────
-python -m cli.gvpctl chaos inject --fail-rate 0.4 --migration-id "mig_scifact_v1_to_v2"
-python -m cli.gvpctl cutover rollback "mig_scifact_v1_to_v2" --approve
-
-# ── Tests ────────────────────────────────────────────────────────────────────
-python -m pytest tests/ -v
-```
-
----
-
-## 🌐 Browser Tab Order (Pre-open Before Recording)
-
-| Tab | URL | Scene |
-|---|---|---|
-| Qdrant | http://localhost:6333/dashboard | After bootstrap, after cutover |
-| FastAPI Health | http://localhost:8000/health | Scene 2 |
-| FastAPI Docs | http://localhost:8000/docs | Scene 2, Scene 11 |
-| Marquez | http://localhost:3000 | Scene 8, Scene 13 |
-| Grafana | http://localhost:3001 | Scene 12 |
-| Prometheus | http://localhost:9090 | Scene 12 (optional) |
-
----
-
-## ⚠️ Common Issues & Fixes
-
-| Issue | Fix |
+| Panel | Type |
 |---|---|
-| `Connection refused: 6333` | `docker compose up -d`, wait 15–20 seconds |
-| `ModuleNotFoundError` | Activate venv: `& .venv\Scripts\Activate.ps1` |
-| Bootstrap hangs on embedding | FastEmbed downloads the model on first run (~120 MB) — just wait |
-| `migration_id not found` | Run `migrate plan` first — it creates the migration record in the catalog |
-| Grafana shows no data | Fire a few `/v1/search` requests to populate Prometheus metrics |
-| Port 8000 already in use | `netstat -ano \| findstr :8000` then `taskkill /PID <PID> /F` |
-| `scifact_v2_shadow` not in Qdrant | Re-run `migrate apply` — the collection is created during shadow writing |
+| Stale Vectors Ratio | gauge |
+| Total Tokens Embedded | stat |
+| Estimated Cost (USD) | stat |
+| Total HTTP Requests | stat |
+| Search Latency Percentiles (p50/p95/p99) | time series |
+| Request Throughput by Endpoint | time series |
+
+> 📌 Run Scene 6's searches **first**. Prometheus scrapes `host.docker.internal:8000/metrics` every 5s, and empty panels are a bad look. Raw metrics: http://localhost:8000/metrics. Metric names are **unprefixed**: `search_latency_seconds`, `embedding_tokens_total`, `estimated_cost_usd_total`, `stale_vector_gauge`, `http_requests_total`.
+
+> 📌 The **Stale Vectors Ratio** gauge only updates when `/v1/catalog/staleness` is called (Scene 4). Hit that endpoint before showing Grafana.
+
+---
+
+### Scene 12 — Marquez Lineage ⛔ *partially blocked*
+
+http://localhost:3000
+
+Marquez is running and reachable, but the OpenLineage events for the baseline are emitted during `migrate apply` / `ingest`, which is blocked. You can show the Marquez UI and the API at http://localhost:5001, but expect an **empty** dataset list until the migration build is completed. Do not narrate a populated lineage graph on screen.
+
+---
+
+### Scene 13 — Chaos Fault Injection ⛔ *blocked, needs bge-large*
+
+```powershell
+python -m cli.gvpctl chaos inject --fail-rate 0.4 --migration-id "mig_77407a443e4d"
+```
+
+Blocked — the chaos runner drives the same `ShadowMigrationWorker`, so it needs bge-large too.
+
+---
+
+### Scene 14 — Instant Rollback ⛔ *blocked, needs bge-large*
+
+```powershell
+python -m cli.gvpctl cutover rollback "mig_77407a443e4d" --approve
+```
+
+Blocked. Real output is one line: `Migration <id> rolled back to vectors_live`.
+
+---
+
+### Scene 15 — Test Suite (✅ works today, ~11 seconds)
+
+**Say**: *"Seventy-eight tests cover ingestion, catalog, migration, and telemetry — the whole platform is under test."*
+
+```powershell
+python -m pytest tests/ -q
+```
+
+```
+...............................................................  [100%]
+78 passed, 1 warning in 11.16s
+```
+
+> 📌 It is **78 passed**, not 73. Requires Qdrant running on 6333 (`test_qdrant_client_matches_configured_server_api` hits the live server).
+
+---
+
+## 📈 What You Can Film Today
+
+| Scene | Status | Time on camera |
+|---|---|---|
+| 1 Infrastructure | ✅ | 30s |
+| 2 Control plane health | ✅ | 15s |
+| 3 Baseline + status | ✅ | 30s |
+| 4 Staleness | ✅ | 30s |
+| 5 Lineage trace | ✅ | 60s |
+| 6 Search | ✅ | 45s |
+| 7 Migration plan | ✅ | 45s |
+| 11 Grafana | ✅ | 45s |
+| 15 Test suite | ✅ | 20s |
+| 8/9/10/13/14 Migration lifecycle | ⛔ | blocked |
+| 12 Marquez | ⚠️ partial | UI only, empty graph |
+
+**That is roughly 5–6 minutes of solid footage** with no build time, no 40-minute stall, and no fabricated output.
+
+---
+
+## 🔨 Part D — Finishing the Blocked Build (do this once, offline)
+
+Run when you have time and bandwidth. Not on filming day.
+
+**D.1 — Download the model (resumable, interruptible):**
+
+```powershell
+$env:HF_TOKEN = "hf_..."
+.\.venv\Scripts\python.exe -u tools\fetch_bge_large.py
+```
+
+Expect `DONE ... size=1336.9MB`. Progress is visible in `%TEMP%\fastembed_cache`.
+
+**D.2 — Shadow-write the target collection (hours on CPU; this is the build, not the demo):**
+
+```powershell
+python -m cli.gvpctl migrate apply "mig_77407a443e4d" --approve
+```
+
+**D.3 — Quality gate, cutover, verify:**
+
+```powershell
+python -m cli.gvpctl quality-gate check "mig_77407a443e4d"
+python -m cli.gvpctl cutover execute "mig_77407a443e4d" --approve
+python -m cli.gvpctl status
+```
+
+After D.3, Scenes 8–14 become filmable and the migration id in this guide should be replaced with yours.
+
+---
+
+## ⚠️ Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `ModuleNotFoundError: No module named 'qdrant_client'` | Using global Python 3.11, not the venv | `& .venv\Scripts\Activate.ps1` |
+| `_duckdb.IOException: ... being used by another process` | A bootstrap is already running; DuckDB is single-writer | Find it: `Get-CimInstance Win32_Process -Filter "Name like '%python%'" \| Select ProcessId,CommandLine` — or wait it out |
+| Bootstrap appears hung | It is embedding 7,620 chunks, ~40 min, silent | Wait. Check progress: see A.2. Never start a second one |
+| `Connection refused: 6333` | Qdrant container down | `docker compose up -d`, wait ~20s |
+| `no cataloged vector 'vec_scifact_0001'` | That id never existed | Use `vec_0001` … `vec_7620` |
+| `unknown migration` | Wrong id, or no plan yet | Copy the id off the `migrate plan` table |
+| `Port 8000 already in use` | uvicorn already running | `netstat -ano \| findstr :8000` then `taskkill /PID <PID> /F` |
+| Grafana panels empty | No traffic since Prometheus last scraped | Fire 3+ searches, hit `/v1/catalog/staleness`, wait 10s |
+| First search takes ~2.5s | Embedding model cold start | Warm up in Part B, Step 4 |
+| bge-large download crawls | ~0.05 MB/s unauthenticated | Set `$env:HF_TOKEN` |
+| `Required module 'pytz' failed to import` | `pytz` missing from venv; only affects ad-hoc DuckDB timestamp casts | `.\.venv\Scripts\python.exe -m pip install pytz` |
+
+---
+
+## 📋 Quick Command Reference
+
+```powershell
+# ── DAILY (Part B) ──────────────────────────────────────────────────────────
+docker compose up -d
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8000   # separate tab
+
+# ── DEMO (Part C) ───────────────────────────────────────────────────────────
+python -m cli.gvpctl status
+python -m cli.gvpctl staleness
+python -m cli.gvpctl lineage trace "vec_0001"
+python -m cli.gvpctl migrate plan "bge-small-en-v1.5" "bge-large-en-v1.5" --approve
+python -m pytest tests/ -q
+
+# ── ONE-TIME BUILD (Part A) — ALREADY DONE, DO NOT RE-RUN ──────────────────
+# python -m ingestion.download_scifact
+# python -m ingestion.bootstrap          # ~40 min, single-writer
+```
+
+---
+
+## 📌 Facts to get right on camera
+
+| Claim | Truth |
+|---|---|
+| Vector count | **7,620** (not 15,240) |
+| Documents | 5,183 |
+| Vector id format | `vec_0001` … `vec_7620` (not `vec_scifact_0001`) |
+| Model | `bge-small-en-v1.5`, 384-dim, Cosine |
+| Live alias | `vectors_live` → `scifact_v1` |
+| Bootstrap duration | **~40 min** on CPU (not 1–3 min) |
+| Bootstrap idempotent? | Catalog yes, embedding **no** |
+| `/health` response | `{"status":"ok"}` only |
+| Test count | **78 passed** |
+| Migration id | Generated per run (e.g. `mig_77407a443e4d`) |
+| Drift estimate | `0.0000`; estimated duration `12.00s` |
+| Containers | **6**, not 5 |

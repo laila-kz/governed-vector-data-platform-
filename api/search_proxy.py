@@ -25,7 +25,29 @@ class QdrantCompatibilityClient:
     def _call_search(self, method_name: str, collection_name: str, query_vector: list[float], limit: int, **kwargs: Any) -> dict[str, Any]:
         method = getattr(self._client, method_name, None)
         if callable(method):
-            return method(collection_name=collection_name, query_vector=query_vector, limit=limit, **kwargs)
+            result = method(collection_name=collection_name, query_vector=query_vector, limit=limit, **kwargs)
+            if isinstance(result, dict):
+                return result
+            clean_vector = [float(x) for x in query_vector]
+            if isinstance(result, list):
+                points = [
+                    {
+                        "id": getattr(p, "id", None) if not isinstance(p, dict) else p.get("id"),
+                        "score": float(getattr(p, "score", 0.0)) if (getattr(p, "score", None) is not None if not isinstance(p, dict) else p.get("score") is not None) else None,
+                        "payload": getattr(p, "payload", {}) if not isinstance(p, dict) else p.get("payload", {}),
+                    }
+                    for p in result
+                ]
+                return {"collection": collection_name, "limit": limit, "query_vector": clean_vector, "points": points}
+            points = []
+            for point in getattr(result, "points", []) or []:
+                score_val = getattr(point, "score", None) if not isinstance(point, dict) else point.get("score")
+                points.append({
+                    "id": getattr(point, "id", None) if not isinstance(point, dict) else point.get("id"),
+                    "score": float(score_val) if score_val is not None else None,
+                    "payload": getattr(point, "payload", {}) if not isinstance(point, dict) else point.get("payload", {}),
+                })
+            return {"collection": collection_name, "limit": limit, "query_vector": clean_vector, "points": points}
 
         query_method = getattr(self._client, "query_points", None)
         if callable(query_method):
@@ -118,7 +140,7 @@ class SearchProxy:
         embeddings = self.embedder([query])
         if not embeddings:
             raise ValueError("embedding model returned no result for the query")
-        return list(embeddings[0])
+        return [float(x) for x in embeddings[0]]
 
     def _shadow_read(
         self,

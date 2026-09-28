@@ -60,8 +60,19 @@ class ChunkingStrategy:
         )
 
 
-def _chunk_text(text: str, strategy: ChunkingStrategy) -> Iterable[str]:
-    encoding = tiktoken.get_encoding(strategy.tokenizer)
+from functools import lru_cache
+
+
+@lru_cache(maxsize=8)
+def _get_encoding(tokenizer_name: str) -> Any:
+    return tiktoken.get_encoding(tokenizer_name)
+
+
+def _chunk_text(
+    text: str, strategy: ChunkingStrategy, encoding: Any | None = None
+) -> Iterable[str]:
+    if encoding is None:
+        encoding = _get_encoding(strategy.tokenizer)
     tokens = encoding.encode(text, disallowed_special=())
     step = strategy.chunk_size_tokens - strategy.chunk_overlap_tokens
     for start in range(0, len(tokens), step):
@@ -83,6 +94,7 @@ def chunk_documents(
 ) -> list[dict[str, Any]]:
     """Chunk document mappings into deterministic, Lance-ready records."""
     strategy = ChunkingStrategy.from_yaml(strategy_path)
+    encoding = _get_encoding(strategy.tokenizer)
     chunks: list[dict[str, Any]] = []
     for document in documents:
         if "doc_id" not in document or "text" not in document:
@@ -91,7 +103,7 @@ def chunk_documents(
         text = document["text"]
         if not isinstance(text, str):
             raise TypeError("Document text must be a string")
-        for chunk_index, chunk_text in enumerate(_chunk_text(text, strategy)):
+        for chunk_index, chunk_text in enumerate(_chunk_text(text, strategy, encoding=encoding)):
             chunk_hash = _chunk_hash(chunk_text, strategy.version)
             chunks.append(
                 {

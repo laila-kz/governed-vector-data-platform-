@@ -42,22 +42,25 @@ def lineage_trace(
     database: str = typer.Option("data/catalog.duckdb", help="Catalog database path"),
 ) -> None:
     """Trace a vector back to its document, chunk, and model lineage."""
-    trace_data: dict[str, Any] = {}
-    try:
-        with CatalogDB(database) as catalog:
-            service = LineageService(catalog)
+    with CatalogDB(database) as catalog:
+        service = LineageService(catalog)
+        try:
             record = service.get_vector_lineage(vector_id)
-            trace_data = {
-                "vector_id": record.vector_id,
-                "document": f"{record.doc_id} (v{record.doc_version})",
-                "chunk": record.chunk_id,
-                "model": f"{record.model_name}:{record.model_version}",
-                "collection": record.collection_name,
-                "strategy": f"{record.strategy_name}:{record.strategy_version}",
-                "source_uri": record.source_uri,
-            }
-    except Exception:
-        trace_data = _lineage_snapshot(vector_id)
+        except KeyError as error:
+            total = catalog.query("SELECT COUNT(*) FROM vectors")[0][0]
+            raise typer.BadParameter(
+                f"no cataloged vector {vector_id!r}; baseline IDs run "
+                f"vec_0001 to vec_{int(total):04d}"
+            ) from error
+    trace_data = {
+        "vector_id": record.vector_id,
+        "document": f"{record.doc_id} (v{record.doc_version})",
+        "chunk": record.chunk_id,
+        "model": f"{record.model_name}:{record.model_version}",
+        "collection": record.collection_name,
+        "strategy": f"{record.strategy_name}:{record.strategy_version}",
+        "source_uri": record.source_uri,
+    }
     render_lineage_trace(vector_id, trace_data)
 
 
@@ -288,7 +291,12 @@ def _staleness_snapshot() -> dict[str, dict[str, int]]:
                     summary[key]["stale"] += int(count)
 
             strategy_rows = catalog.query(
-                "SELECT strategy_name, active, COUNT(*) FROM vectors GROUP BY strategy_name, active"
+                """
+                SELECT c.strategy_name, v.active, COUNT(*)
+                FROM vectors AS v
+                JOIN chunks AS c ON c.chunk_id = v.chunk_id
+                GROUP BY c.strategy_name, v.active
+                """
             )
             for strategy_name, active, count in strategy_rows:
                 key = str(strategy_name)
@@ -307,16 +315,6 @@ def _staleness_snapshot() -> dict[str, dict[str, int]]:
             "fixed_size_v1": {"active": 0, "stale": 0},
         }
     return summary
-
-
-def _lineage_snapshot(vector_id: str) -> dict[str, Any]:
-    return {
-        "vector_id": vector_id,
-        "document": "doc-1",
-        "chunk": "doc-1:0000",
-        "model": "bge-small-en-v1.5",
-        "collection": "vectors_live",
-    }
 
 
 @app.command()
